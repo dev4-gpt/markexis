@@ -1,0 +1,79 @@
+{
+  "id": "githubscraper001",
+  "name": "Pillar 0 - GitHub Lead Scraper",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "scrape/github",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-ghhook",
+      "name": "Webhook - github-scrape",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "github-scrape-markexis"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- GitHub lead scraper: find B2B SaaS founders -> POST to lead-ingest pipeline ----\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst GH = ENV.GITHUB_TOKEN;\nconst WEBHOOK = ENV.N8N_WEBHOOK_URL || \"http://localhost:5678/webhook/lead-ingest\";\nconst headers = { Authorization: \"Bearer \" + GH, Accept: \"application/vnd.github+json\", \"User-Agent\": \"markexis-scraper\" };\nconst CAP = 6; // leads per run (keep small; each triggers full enrich+score pipeline)\nconst queries = [\"topic:saas stars:80..1500\", \"topic:b2b-saas stars:30..1200\"];\n\nlet posted = 0, skipped = 0; const errors = []; const seen = new Set(); const results = [];\nfor (const q of queries) {\n  if (seen.size >= CAP) break;\n  let repos = [];\n  try {\n    const r = await this.helpers.httpRequest({ method: \"GET\",\n      url: \"https://api.github.com/search/repositories?sort=stars&order=desc&per_page=15&q=\" + encodeURIComponent(q),\n      headers, json: true, timeout: 20000 });\n    repos = (r && r.items) || [];\n  } catch (e) { errors.push(\"search: \" + String(e && e.message || e).slice(0,120)); continue; }\n\n  for (const repo of repos) {\n    if (seen.size >= CAP) break;\n    const owner = repo.owner || {};\n    if (owner.type !== \"User\") { skipped++; continue; }\n    if (seen.has(owner.login)) continue;\n    seen.add(owner.login);\n    let u = {};\n    try { u = await this.helpers.httpRequest({ method: \"GET\", url: \"https://api.github.com/users/\" + owner.login, headers, json: true, timeout: 15000 }); }\n    catch (e) { errors.push(\"user \" + owner.login); continue; }\n\n    const company = (u.company || \"\").replace(/^@/, \"\").trim() || repo.name;\n    const blog = (u.blog || \"\").trim();\n    const lead = {\n      name: u.name || owner.login,\n      email: u.email || null,\n      company,\n      domain: blog || null,\n      title: \"Founder / Maintainer\",\n      location: u.location || null,\n      source_platform: \"github\",\n      source_url: u.html_url,\n      raw_bio: [u.bio, \"Maintains \" + repo.full_name + \" (\" + repo.stargazers_count + \" stars). \" + (repo.description || \"\")].filter(Boolean).join(\" | \"),\n      company_size_signal: \"unknown\",\n      scraped_at: new Date().toISOString()\n    };\n    try {\n      const resp = await this.helpers.httpRequest({ method: \"POST\", url: WEBHOOK, headers: { \"Content-Type\": \"application/json\" }, body: lead, json: true, timeout: 90000 });\n      posted++;\n      results.push({ login: owner.login, company, score: (resp && resp.summary) ? resp.summary.icp_score : \"?\" });\n    } catch (e) { errors.push(\"post \" + owner.login + \": \" + String(e && e.message || e).slice(0,80)); }\n  }\n}\nreturn [{ json: { posted, skipped, checked: seen.size, errors: errors.slice(0,5), results } }];"
+      },
+      "id": "node-ghscrape",
+      "name": "GitHub Scrape + Ingest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-ghrespond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - github-scrape": {
+      "main": [
+        [
+          {
+            "node": "GitHub Scrape + Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub Scrape + Ingest": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}

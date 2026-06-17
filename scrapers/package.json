@@ -1,0 +1,25 @@
+{
+  "name": "markexis-scrapers",
+  "version": "0.1.0",
+  "description": "Local-Mac lead scrapers for the Markexis AI CMO platform. Each platform scraper outputs the unified lead schema and POSTs to the n8n /webhook/lead-ingest endpoint.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "markexis-scrape": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "linkedin": "node index.js --platform=linkedin",
+    "g2": "node index.js --platform=g2"
+  },
+  "dependencies": {
+    "crawlee": "^3.11.5",
+    "dotenv": "^16.4.5",
+    "nodemailer": "^6.10.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

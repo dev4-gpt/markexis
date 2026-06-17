@@ -1,0 +1,13 @@
+.env
+node_modules/
+scrapers/node_modules/
+.DS_Store
+*.log
+npm-debug.log*
+*.secrets.md
+PHASE0_DEPLOYMENT.secrets.md
+dist/
+build/
+flux_test.jpg
+*.jpeg
+*.png

@@ -1,0 +1,51 @@
+{
+  "id": "gplacesscraper1",
+  "name": "Pillar 0 - Google Places Lead Scraper",
+  "nodes": [
+    {
+      "id": "gp-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "scrape/google-places",
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "gp-code",
+      "name": "Google Places Scrape + Ingest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "parameters": {
+        "jsCode": "// Google Places Lead Scraper for Markexis\n// Finds LatAm B2B companies using Google Places Text Search API\n// POST body (optional): { city, query } to run a single custom search\n// No body: runs the full preset query list\n\nconst INGEST_URL = 'http://67.207.89.85:5678/webhook/lead-ingest';\nconst PLACES_KEY = $env.GOOGLE_PLACES_API_KEY;\nconst CAP = 25; // max leads per run (Places API: ~4k/mo free)\n\n// Pre-defined searches: B2B companies in LatAm cities that Markexis serves\nconst DEFAULT_QUERIES = [\n  { query: 'B2B software company', city: 'Mexico City', lat: 19.4326, lng: -99.1332 },\n  { query: 'SaaS startup technology', city: 'Sao Paulo', lat: -23.5505, lng: -46.6333 },\n  { query: 'technology company B2B', city: 'Bogota', lat: 4.7110, lng: -74.0721 },\n  { query: 'marketing agency B2B', city: 'Buenos Aires', lat: -34.6037, lng: -58.3816 },\n  { query: 'fintech company', city: 'Mexico City', lat: 19.4326, lng: -99.1332 },\n  { query: 'software startup', city: 'Santiago', lat: -33.4489, lng: -70.6693 },\n  { query: 'e-commerce B2B platform', city: 'Sao Paulo', lat: -23.5505, lng: -46.6333 },\n];\n\n// Override with body params if provided\nconst body = $input.first()?.json?.body || {};\nconst queries = (body.city && body.query)\n  ? [{ query: body.query, city: body.city, lat: body.lat || 19.4326, lng: body.lng || -99.1332 }]\n  : DEFAULT_QUERIES;\n\nconst seen = new Set();\nconst results = [];\n\nfor (const q of queries) {\n  if (results.length >= CAP) break;\n\n  // Text Search API (old stable endpoint — consistent field support)\n  let searchRes;\n  try {\n    searchRes = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(q.query + ' ' + q.city)}&key=${PLACES_KEY}&type=establishment`,\n    });\n  } catch (e) {\n    continue;\n  }\n\n  if (searchRes.status !== 'OK' && searchRes.status !== 'ZERO_RESULTS') {\n    continue;\n  }\n\n  for (const place of (searchRes.results || []).slice(0, 5)) {\n    if (results.length >= CAP) break;\n    if (seen.has(place.place_id)) continue;\n    seen.add(place.place_id);\n\n    // Skip obvious non-B2B categories\n    const types = place.types || [];\n    const skipTypes = ['restaurant', 'food', 'lodging', 'gas_station', 'hospital', 'school', 'church', 'store', 'supermarket', 'bakery', 'bar', 'cafe'];\n    if (skipTypes.some(t => types.includes(t))) continue;\n\n    // Place Details to get website URL\n    let website = null;\n    let phone = null;\n    try {\n      const details = await this.helpers.httpRequest({\n        method: 'GET',\n        url: `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=website,formatted_phone_number&key=${PLACES_KEY}`,\n      });\n      website = details.result?.website || null;\n      phone = details.result?.formatted_phone_number || null;\n    } catch (e) { /* details optional */ }\n\n    // Derive domain from website\n    let domain = null;\n    if (website) {\n      try {\n        const u = new URL(website);\n        domain = u.hostname.replace(/^www\\./, '');\n      } catch (e) { /* invalid URL */ }\n    }\n\n    const address = place.formatted_address || '';\n    const lead = {\n      name: place.name,\n      email: null,\n      company: place.name,\n      domain: domain,\n      title: null,\n      location: q.city,\n      source_platform: 'google_maps',\n      source_url: website || `https://maps.google.com/?cid=${place.place_id}`,\n      raw_bio: `${place.name} — ${address}. Types: ${types.slice(0, 3).join(', ')}. Found via Places search: \"${q.query}\" in ${q.city}.`,\n      company_size_signal: 'unknown',\n      scraped_at: new Date().toISOString(),\n    };\n\n    let ingestResult = 'skipped';\n    try {\n      const r = await this.helpers.httpRequest({\n        method: 'POST',\n        url: INGEST_URL,\n        headers: { 'Content-Type': 'application/json' },\n        body: JSON.stringify(lead),\n      });\n      ingestResult = r.status || 'ok';\n    } catch (e) {\n      ingestResult = `error: ${e.message.slice(0, 80)}`;\n    }\n\n    results.push({ name: place.name, domain, city: q.city, ingest: ingestResult });\n\n    // 200ms between detail calls to stay under Places rate limit\n    await new Promise(r => setTimeout(r, 200));\n  }\n}\n\nreturn [{ json: { scraped: results.length, results } }];"
+      }
+    },
+    {
+      "id": "gp-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [680, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Google Places Scrape + Ingest", "type": "main", "index": 0 }]]
+    },
+    "Google Places Scrape + Ingest": {
+      "main": [[{ "node": "Respond", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false
+}
