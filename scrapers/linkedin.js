@@ -248,9 +248,14 @@ export async function run(args = {}) {
     process.exit(1);
   }
 
+  // Allow pointing to a specific Chrome/Chromium binary via env var.
+  // Useful when the playwright version's bundled browser isn't downloaded yet:
+  //   CHROMIUM_PATH="$HOME/Library/Caches/ms-playwright/chromium-1217/.../Google Chrome for Testing"
+  const executablePath = process.env.CHROMIUM_PATH || undefined;
   console.log(`[linkedin] launching ${headless ? "headless" : "visible"} browser…`);
   const browser = await chromium.launch({
     headless,
+    executablePath,
     args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
     slowMo: headless ? 0 : 50,
   });
