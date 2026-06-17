@@ -8,6 +8,7 @@ npm-debug.log*
 PHASE0_DEPLOYMENT.secrets.md
 dist/
 build/
+scrapers/cookies/
 flux_test.jpg
 *.jpeg
 *.png

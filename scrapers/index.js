@@ -18,8 +18,8 @@ function parseArgs(argv) {
 
 // Platform scrapers land here as they're built (Phase 1).
 const SCRAPERS = {
+  linkedin: () => import("./linkedin.js"),
   // g2: () => import("./g2.js"),
-  // linkedin: () => import("./linkedin.js"),
 };
 
 async function selftest() {
