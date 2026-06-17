@@ -71,7 +71,7 @@ Lead Sources (12 platforms)
 | Google Maps/Places | VPS (n8n) | Places API — LatAm businesses |
 | Reddit | VPS (n8n) | OAuth API (pending approval) |
 | ProductHunt | VPS (n8n) | GraphQL API |
-| LinkedIn | Local Mac | Crawlee + Playwright stealth |
+| LinkedIn | Local Mac | Crawlee + Playwright stealth (**built** — `scrapers/linkedin.js`) |
 | Instagram, Twitter/X | Local Mac | Crawlee + Playwright |
 | Facebook Groups | Local Mac | Crawlee + Playwright |
 | G2, Clutch, Wellfound | Local Mac | Crawlee (public pages) |
@@ -143,13 +143,14 @@ markexis/
 ```bash
 # See n8n-workflows/README.md for full instructions
 # Short version — for each JSON file:
-scp n8n-workflows/pillar-0-lead-gen/lead-ingest-enrich-score.json root@67.207.89.85:/tmp/
-ssh root@67.207.89.85 "
-  docker cp /tmp/lead-ingest-enrich-score.json n8n-n8n-1:/tmp/ &&
-  docker exec n8n-n8n-1 n8n import:workflow --input=/tmp/lead-ingest-enrich-score.json &&
-  docker exec n8n-n8n-1 n8n update:workflow --id=leadpipeline0001 --active=true &&
-  docker compose -f /root/n8n/docker-compose.yml restart n8n
+scp n8n-workflows/pillar-0-lead-gen/lead-ingest-enrich-score.json root@YOUR_VPS:/tmp/
+ssh root@YOUR_VPS "
+  docker cp /tmp/lead-ingest-enrich-score.json n8n-n8n-1:/tmp/
+  docker exec n8n-n8n-1 n8n import:workflow --input=/tmp/lead-ingest-enrich-score.json
+  docker exec n8n-n8n-1 n8n publish:workflow --id=leadpipeline0001
+  docker compose -f ~/n8n/docker-compose.yml restart n8n
 "
+# Note: use publish:workflow (not update:workflow --active) for n8n 2.x
 ```
 
 ### 3. Set Up Local Scrapers (Mac)
@@ -180,14 +181,15 @@ curl -X POST http://67.207.89.85:5678/webhook/scrape/google-places \
 
 ---
 
-## Results (as of 2026-06-17)
+## Results (as of 2026-06-18)
 
 | Metric | Value |
 |--------|-------|
-| Lead sources live | 3 (GitHub, HackerNews, Google Places) |
-| Leads in Supabase | 5+ (GitHub run, Day 1) |
-| PERFECT / GOOD scored | 2 / 5 |
-| Emails sent | 0 (ready — dry-run confirmed) |
+| Lead sources live | 4 VPS (GitHub, HackerNews, Google Places, Reddit pending) + LinkedIn (Mac) |
+| Leads in Supabase | **121** across Google Maps, HackerNews, GitHub |
+| PERFECT / GOOD scored | 6 GOOD (incl. NachoNacho CTO — track B, ready to send) |
+| Email outreach | 0 sent (dry-run confirmed — 1 GOOD lead with email ready) |
+| LinkedIn scraper | Built — `node linkedin.js --login` to authenticate, then headless |
 | Monthly cost | $0 AI + $6 VPS |
 
 ---
