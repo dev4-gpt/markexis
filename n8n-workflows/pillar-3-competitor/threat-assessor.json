@@ -1,0 +1,48 @@
+{
+  "id": "threatassess01",
+  "name": "Pillar 3 - Threat Assessor (Groq keyword overlap → HIGH/MEDIUM/LOW)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "competitor/assess-threat",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - assess-threat",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "threat-assessor-mkx"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 3: Threat Assessor — keyword overlap + Groq → threat_score ----\n// Input: { url, domain, title, content_preview }\n//   OR:  { batch: true }  — process all unscored articles from Supabase\n// Groq 8b classifies HIGH/MEDIUM/LOW based on Markexis keyword cluster overlap\n// Updates competitor_articles.threat_score + keyword_overlap[]\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst b = $json.body || $json;\n\n// Markexis keyword clusters to check against (from CLAUDE.md)\nconst MARKEXIS_KEYWORDS = [\n  // Cluster 1 - LatAm\n  'latam market entry', 'latin america', 'mexico market', 'brazil market',\n  'colombia', 'latam gtm', 'latin america business', 'latam expansion',\n  // Cluster 2 - AI Marketing\n  'ai implementation marketing', 'ai marketing strategy', 'ai sales marketing',\n  'marketing automation', 'artificial intelligence marketing', 'ai go-to-market',\n  // Cluster 3 - Revenue Growth / GTM\n  'b2b gtm strategy', 'go-to-market consulting', 'revenue growth strategy',\n  'b2b pipeline', 'saas gtm', 'marketing sales alignment', 'cac reduction',\n  'b2b lead generation', 'gtm strategy', 'go-to-market',\n  // Cluster 4 - Competitor overlap\n  'latam expansion consulting', 'gtm consulting', 'b2b growth consulting',\n  'revenue growth consultant'\n];\n\nconst SYSTEM_PROMPT = `You are a competitive intelligence analyst for Markexis — a B2B consulting firm specializing in:\n1. LatAm Market Entry (Mexico, Brazil, Colombia, Argentina, Chile)\n2. AI Implementation in Marketing & Sales\n3. Revenue Growth & GTM Strategy\n\nAnalyze the competitor article and assess its threat level to Markexis.\n\nHIGH: Directly competes with Markexis's core services. Targets same ICP (B2B SaaS, Fintech, 20-500 employees). Covers LatAm market entry, AI marketing implementation, or GTM strategy in depth. Could rank for Markexis's primary keywords.\n\nMEDIUM: Covers adjacent topics. May steal some traffic but doesn't directly compete. Mentions B2B marketing, growth, or LatAm tangentially.\n\nLOW: General marketing content, B2C focused, or completely off-topic.\n\nReturn JSON only: { \"threat_score\": \"HIGH\"|\"MEDIUM\"|\"LOW\", \"keyword_overlap\": [\"kw1\",\"kw2\",...], \"reasoning\": \"one sentence\" }`;\n\nasync function assessArticle(url, domain, title, preview) {\n  const USER = `Competitor: ${domain}\\nArticle: \"${title}\"\\nContent preview: ${(preview || '').slice(0, 1500)}\\n\\nMarkexis keywords to check overlap with:\\n${MARKEXIS_KEYWORDS.join(', ')}\\n\\nAssess threat level:`;\n\n  const providers = [\n    { url: 'https://api.groq.com/openai/v1/chat/completions', key: ENV.GROQ_API_KEY, model: 'llama-3.1-8b-instant' },\n    { url: 'https://api.cerebras.ai/v1/chat/completions', key: ENV.CEREBRAS_API_KEY, model: 'llama3.1-70b' }\n  ];\n\n  for (const p of providers) {\n    if (!p.key) continue;\n    try {\n      const res = await this.helpers.httpRequest({\n        method: 'POST', url: p.url,\n        headers: { Authorization: `Bearer ${p.key}`, 'Content-Type': 'application/json' },\n        body: JSON.stringify({\n          model: p.model,\n          messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: USER }],\n          temperature: 0.2, max_tokens: 256, response_format: { type: 'json_object' }\n        }),\n        json: true, timeout: 20000\n      });\n      return JSON.parse(res.choices[0].message.content);\n    } catch { continue; }\n  }\n  return null;\n}\n\n// Single article mode (called from content-extractor)\nif (b.url && !b.batch) {\n  const result = await assessArticle.call(this, b.url, b.domain, b.title, b.content_preview);\n  if (!result) return [{ json: { ok: false, error: 'LLM unavailable', url: b.url } }];\n\n  if (ENV.SUPABASE_URL) {\n    await this.helpers.httpRequest({\n      method: 'PATCH',\n      url: `${ENV.SUPABASE_URL}/rest/v1/competitor_articles?url=eq.${encodeURIComponent(b.url)}`,\n      headers: {\n        apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n        'Content-Type': 'application/json'\n      },\n      body: JSON.stringify({\n        threat_score: result.threat_score,\n        keyword_overlap: result.keyword_overlap || []\n      }),\n      json: false, timeout: 10000\n    }).catch(() => null);\n  }\n\n  return [{ json: { ok: true, url: b.url, ...result } }];\n}\n\n// Batch mode: pull unscored articles from Supabase and assess all\nconst unscored = ENV.SUPABASE_URL ? await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${ENV.SUPABASE_URL}/rest/v1/competitor_articles?threat_score=is.null&select=url,competitor_domain,title,meta_description&limit=20`,\n  headers: { apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}` },\n  json: true, timeout: 10000\n}).catch(() => []) : [];\n\nif (!unscored.length) return [{ json: { ok: true, message: 'No unscored articles found', assessed: 0 } }];\n\nconst batchResults = await Promise.allSettled(\n  unscored.map(async (article) => {\n    const result = await assessArticle.call(this, article.url, article.competitor_domain, article.title, article.meta_description);\n    if (!result || !ENV.SUPABASE_URL) return { ...article, skipped: true };\n    await this.helpers.httpRequest({\n      method: 'PATCH',\n      url: `${ENV.SUPABASE_URL}/rest/v1/competitor_articles?url=eq.${encodeURIComponent(article.url)}`,\n      headers: {\n        apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n        'Content-Type': 'application/json'\n      },\n      body: JSON.stringify({ threat_score: result.threat_score, keyword_overlap: result.keyword_overlap || [] }),\n      json: false, timeout: 10000\n    }).catch(() => null);\n    return { url: article.url, domain: article.competitor_domain, ...result };\n  })\n);\n\nconst assessed = batchResults.filter(r => r.status === 'fulfilled').map(r => r.value);\nconst high = assessed.filter(a => a.threat_score === 'HIGH').length;\n\nreturn [{ json: { ok: true, assessed: assessed.length, high_threats: high, results: assessed } }];"
+      },
+      "id": "node-assessor",
+      "name": "Threat Assessor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - assess-threat": { "main": [[{ "node": "Threat Assessor", "type": "main", "index": 0 }]] },
+    "Threat Assessor": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

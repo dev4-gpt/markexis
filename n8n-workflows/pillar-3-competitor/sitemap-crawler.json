@@ -1,0 +1,31 @@
+{
+  "id": "sitemapcrwlr001",
+  "name": "Pillar 3 - Sitemap Crawler (Daily competitor URL discovery)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 7 * * *" }] }
+      },
+      "id": "node-schedule",
+      "name": "Schedule - Daily 7am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 3: Sitemap Crawler — daily competitor URL discovery ----\n// For each competitor domain, fetch sitemap.xml + sitemap_index.xml\n// Parse <loc> tags via regex → batch-check Supabase for new URLs\n// POST each new URL to content-extractor webhook\n// Architecture: Promise.allSettled per domain — one domain failure doesn't block others\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\n\nconst COMPETITORS = [\n  'gotomarket.io', 'revenuearchitects.com', 'growthcollective.com',\n  'pavilion.com', 'klique.io', 'demandcurve.com', 'cxl.com', 'openviewpartners.com'\n];\n\nconst SITEMAP_PATHS = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml', '/wp-sitemap.xml'];\nconst LOC_REGEX = /<loc>\\s*([^<]+?)\\s*<\\/loc>/g;\n\nasync function fetchSitemap(domain, path) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET', url: `https://${domain}${path}`,\n      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' },\n      json: false, timeout: 15000\n    });\n    const urls = [];\n    let m;\n    while ((m = LOC_REGEX.exec(res)) !== null) {\n      const u = m[1].trim();\n      if (u.startsWith('http') && !u.endsWith('.xml')) urls.push(u);\n    }\n    LOC_REGEX.lastIndex = 0;\n    return urls;\n  } catch { return []; }\n}\n\nasync function getExistingUrls(domain) {\n  if (!ENV.SUPABASE_URL) return new Set();\n  const res = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${ENV.SUPABASE_URL}/rest/v1/competitor_articles?competitor_domain=eq.${encodeURIComponent(domain)}&select=url`,\n    headers: { apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}` },\n    json: true, timeout: 10000\n  }).catch(() => []);\n  return new Set((Array.isArray(res) ? res : []).map(r => r.url));\n}\n\nasync function processDomain(domain) {\n  // Try each sitemap path, collect all unique article URLs\n  const allUrls = new Set();\n  for (const path of SITEMAP_PATHS) {\n    const urls = await fetchSitemap.call(this, domain, path);\n    urls.forEach(u => allUrls.add(u));\n    if (allUrls.size > 0 && path === SITEMAP_PATHS[0]) break; // found primary sitemap\n  }\n\n  if (allUrls.size === 0) return { domain, found: 0, new: 0, status: 'no_sitemap' };\n\n  // Filter out already-known URLs\n  const existing = await getExistingUrls.call(this, domain);\n  const newUrls = [...allUrls].filter(u => !existing.has(u)).slice(0, 50); // max 50 new per run\n\n  // Send each new URL to content-extractor (fire-and-forget, don't wait)\n  await Promise.allSettled(newUrls.map(url =>\n    this.helpers.httpRequest({\n      method: 'POST',\n      url: 'http://localhost:5678/webhook/competitor/extract',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({ url, competitor_domain: domain }),\n      json: true, timeout: 5000\n    }).catch(() => null)\n  ));\n\n  return { domain, found: allUrls.size, new: newUrls.length, status: 'ok' };\n}\n\nconst results = await Promise.allSettled(\n  COMPETITORS.map(d => processDomain.call(this, d))\n);\n\nconst summary = results.map((r, i) =>\n  r.status === 'fulfilled' ? r.value : { domain: COMPETITORS[i], status: 'error', error: r.reason?.message?.slice(0, 100) }\n);\n\nconst totalNew = summary.reduce((acc, r) => acc + (r.new || 0), 0);\n\nreturn [{ json: { ok: true, competitors_checked: COMPETITORS.length, total_new_urls: totalNew, ran_at: new Date().toISOString(), details: summary } }];"
+      },
+      "id": "node-crawler",
+      "name": "Sitemap Crawler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    }
+  ],
+  "connections": {
+    "Schedule - Daily 7am": { "main": [[{ "node": "Sitemap Crawler", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

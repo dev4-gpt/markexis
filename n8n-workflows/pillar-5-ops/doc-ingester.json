@@ -1,0 +1,48 @@
+{
+  "id": "docingesterv01",
+  "name": "Pillar 5 - Doc Ingester (URL/text → chunks → Jina embeddings → pgvector)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ops/ingest-doc",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - ingest-doc",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "doc-ingester-markexis"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 5: Doc Ingester — URL/text → chunks → Jina embeddings → pgvector ----\n// Input: { url: '...' }  OR  { content: '...', source: '...', doc_type: '...' }\n// 1) If URL: Firecrawl scrape → markdown\n// 2) Chunk text (600 chars, 100 overlap, sentence-boundary aware)\n// 3) Jina AI embed all chunks (model: jina-embeddings-v2-base-en, 768-dim)\n// 4) Batch upsert to Supabase knowledge_base pgvector table\n// Cost: Jina free 1M tokens/month — each chunk ~80-150 tokens average\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst b = $json.body || $json;\n\nconst inputUrl = String(b.url || '').trim();\nconst inputContent = String(b.content || '').trim();\nconst source = String(b.source || inputUrl || 'manual').slice(0, 500);\nconst docType = String(b.doc_type || 'article').slice(0, 50);\n\nif (!inputUrl && !inputContent) return [{ json: { ok: false, error: 'Provide url or content' } }];\n\n// Step 1: Get raw text\nlet rawText = inputContent;\nif (inputUrl && !rawText) {\n  if (!ENV.FIRECRAWL_API_KEY) return [{ json: { ok: false, error: 'FIRECRAWL_API_KEY not set — provide content directly' } }];\n  try {\n    const fcRes = await this.helpers.httpRequest({\n      method: 'POST',\n      url: 'https://api.firecrawl.dev/v1/scrape',\n      headers: { Authorization: `Bearer ${ENV.FIRECRAWL_API_KEY}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ url: inputUrl, formats: ['markdown'], onlyMainContent: true }),\n      json: true, timeout: 30000\n    });\n    rawText = fcRes.data?.markdown || '';\n  } catch (e) { return [{ json: { ok: false, error: `Firecrawl failed: ${e.message.slice(0,100)}` } }]; }\n}\n\n// Clean markdown noise\nrawText = rawText\n  .replace(/!\\[.*?\\]\\(.*?\\)/g, '')  // images\n  .replace(/\\[([^\\]]+)\\]\\(.*?\\)/g, '$1')  // links → text only\n  .replace(/```[\\s\\S]*?```/g, '')  // code blocks\n  .replace(/^#{1,6}\\s+/gm, '')  // headings → plain text\n  .replace(/\\*{1,2}|_{1,2}/g, '')  // bold/italic markers\n  .replace(/\\n{3,}/g, '\\n\\n')  // collapse blank lines\n  .trim();\n\nif (rawText.length < 100) return [{ json: { ok: false, error: 'Insufficient content after cleaning' } }];\n\n// Step 2: Chunk text (600 chars, 100 overlap, prefer sentence boundaries)\nfunction chunkText(text, maxLen = 600, overlap = 100) {\n  const chunks = [];\n  let pos = 0;\n  while (pos < text.length) {\n    let end = pos + maxLen;\n    if (end < text.length) {\n      // Try to break at sentence end within ±80 chars of end\n      const window = text.slice(Math.max(pos, end - 80), Math.min(text.length, end + 80));\n      const sentenceEnd = window.search(/[.!?]\\s/);\n      if (sentenceEnd !== -1) end = Math.max(pos, end - 80) + sentenceEnd + 2;\n      else {\n        // Fall back to word boundary\n        const wordEnd = text.lastIndexOf(' ', end);\n        if (wordEnd > pos) end = wordEnd;\n      }\n    }\n    const chunk = text.slice(pos, end).trim();\n    if (chunk.length > 50) chunks.push(chunk);\n    pos = end - overlap;\n  }\n  return chunks;\n}\n\nconst chunks = chunkText(rawText);\nif (!chunks.length) return [{ json: { ok: false, error: 'No chunks produced' } }];\n\n// Step 3: Jina AI embeddings — batch up to 8 at a time\nif (!ENV.JINA_API_KEY) return [{ json: { ok: false, error: 'JINA_API_KEY not set' } }];\n\nasync function embedBatch(texts) {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://api.jina.ai/v1/embeddings',\n    headers: { Authorization: `Bearer ${ENV.JINA_API_KEY}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({ model: 'jina-embeddings-v2-base-en', input: texts }),\n    json: true, timeout: 30000\n  });\n  return res.data.map(d => d.embedding);\n}\n\nconst BATCH_SIZE = 8;\nconst allEmbeddings = [];\nfor (let i = 0; i < chunks.length; i += BATCH_SIZE) {\n  const batch = chunks.slice(i, i + BATCH_SIZE);\n  try {\n    const embeddings = await embedBatch.call(this, batch);\n    allEmbeddings.push(...embeddings);\n  } catch (e) {\n    return [{ json: { ok: false, error: `Jina embed failed at batch ${i}: ${e.message.slice(0,100)}`, chunks_so_far: allEmbeddings.length } }];\n  }\n}\n\n// Step 4: Upsert to Supabase knowledge_base\n// Supabase doesn't support array upsert with pgvector easily — insert one by one\nif (!ENV.SUPABASE_URL) return [{ json: { ok: false, error: 'SUPABASE_URL not set' } }];\n\nconst insertResults = await Promise.allSettled(\n  chunks.map((chunk, i) =>\n    this.helpers.httpRequest({\n      method: 'POST',\n      url: `${ENV.SUPABASE_URL}/rest/v1/knowledge_base`,\n      headers: {\n        apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n        'Content-Type': 'application/json', Prefer: 'return=minimal'\n      },\n      body: JSON.stringify({\n        content: chunk,\n        source,\n        doc_type: docType,\n        embedding: allEmbeddings[i]\n      }),\n      json: false, timeout: 10000\n    })\n  )\n);\n\nconst succeeded = insertResults.filter(r => r.status === 'fulfilled').length;\n\nreturn [{ json: {\n  ok: true,\n  source, doc_type: docType,\n  total_chars: rawText.length,\n  chunks_created: chunks.length,\n  chunks_stored: succeeded,\n  chunks_failed: chunks.length - succeeded\n} }];"
+      },
+      "id": "node-ingester",
+      "name": "Doc Ingester",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - ingest-doc": { "main": [[{ "node": "Doc Ingester", "type": "main", "index": 0 }]] },
+    "Doc Ingester": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

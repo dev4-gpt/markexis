@@ -1,0 +1,48 @@
+{
+  "id": "contentextract1",
+  "name": "Pillar 3 - Content Extractor (Firecrawl → competitor_articles)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "competitor/extract",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - competitor-extract",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "competitor-extractor-mkx"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 3: Content Extractor — Firecrawl → competitor_articles ----\n// Input: { url: '...', competitor_domain: '...' }\n// 1) Firecrawl scrape → markdown\n// 2) Extract title, meta_description, word_count\n// 3) Upsert into competitor_articles (url UNIQUE — safe to re-run)\n// 4) Fire threat-assessor webhook for this article\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst b = $json.body || $json;\n\nconst url = String(b.url || '').trim();\nconst domain = String(b.competitor_domain || new URL(url).hostname.replace('www.', '')).trim();\n\nif (!url.startsWith('http')) return [{ json: { ok: false, error: 'Invalid URL' } }];\n\n// 1) Firecrawl scrape\nlet markdown = '';\nif (ENV.FIRECRAWL_API_KEY) {\n  try {\n    const fcRes = await this.helpers.httpRequest({\n      method: 'POST',\n      url: 'https://api.firecrawl.dev/v1/scrape',\n      headers: { Authorization: `Bearer ${ENV.FIRECRAWL_API_KEY}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ url, formats: ['markdown'], onlyMainContent: true }),\n      json: true, timeout: 30000\n    });\n    markdown = fcRes.data?.markdown || '';\n  } catch (e) { return [{ json: { ok: false, error: `Firecrawl failed: ${e.message.slice(0,100)}`, url } }]; }\n}\n\nif (!markdown || markdown.length < 100) return [{ json: { ok: false, error: 'No content extracted', url } }];\n\n// 2) Extract metadata from markdown\n// Title: first # heading or first non-empty line\nconst titleMatch = markdown.match(/^#\\s+(.+)$/m) || markdown.match(/^(.{10,80})$/m);\nconst title = (titleMatch?.[1] || url.split('/').pop() || url).replace(/[\\[\\]\\(\\)]/g, '').slice(0, 200);\n\n// Meta description: first substantive paragraph (under 160 chars)\nconst paraMatch = markdown.replace(/^#.+$/mg, '').match(/([A-Z][^\\n]{30,160}[.!?])/);\nconst metaDescription = paraMatch?.[1]?.trim().slice(0, 160) || '';\n\n// Word count from clean text\nconst wordCount = markdown.replace(/[#*`\\[\\]()]/g, '').split(/\\s+/).filter(Boolean).length;\n\n// 3) Upsert to Supabase\nconst row = {\n  competitor_domain: domain,\n  url,\n  title,\n  word_count: wordCount,\n  meta_description: metaDescription,\n  detected_at: new Date().toISOString()\n};\n\nif (ENV.SUPABASE_URL) {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.SUPABASE_URL}/rest/v1/competitor_articles?on_conflict=url`,\n    headers: {\n      apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates'\n    },\n    body: JSON.stringify(row), json: false, timeout: 15000\n  }).catch(() => null);\n}\n\n// 4) Fire threat-assessor for this article (async, don't block response)\nthis.helpers.httpRequest({\n  method: 'POST',\n  url: 'http://localhost:5678/webhook/competitor/assess-threat',\n  headers: { 'Content-Type': 'application/json' },\n  body: JSON.stringify({ url, domain, title, content_preview: markdown.slice(0, 2000) }),\n  json: true, timeout: 5000\n}).catch(() => null);\n\nreturn [{ json: { ok: true, url, domain, title, word_count: wordCount, meta_description: metaDescription } }];"
+      },
+      "id": "node-extractor",
+      "name": "Content Extractor",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - competitor-extract": { "main": [[{ "node": "Content Extractor", "type": "main", "index": 0 }]] },
+    "Content Extractor": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
