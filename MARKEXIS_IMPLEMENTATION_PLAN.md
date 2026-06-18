@@ -101,16 +101,17 @@ docker-compose up -d
 ### 0F. Local Mac Setup (scrapers)
 ```bash
 cd /path/to/project/scrapers
-npm init -y
-npm install crawlee playwright-extra playwright-extra-plugin-stealth dotenv axios
+npm install   # crawlee, playwright-extra, playwright-extra-plugin-stealth, dotenv, nodemailer
 
-# .env file
+# .env (root level — one directory above scrapers/)
 N8N_WEBHOOK_URL=http://67.207.89.85:5678/webhook/lead-ingest
-OLLAMA_URL=http://localhost:11434
-COMFYUI_URL=http://localhost:8188
+SUPABASE_URL=https://[project-id].supabase.co
+SUPABASE_ANON_KEY=...
+GMAIL_USER=...
+GMAIL_APP_PASSWORD=...   # Google Account → Security → App passwords (2FA required)
+GMAIL_FROM_NAME=Aryaman from Markexis
 ```
-
-Install Ollama: `brew install ollama && ollama pull llama3.1 && ollama pull nomic-embed-text`
+Note: Ollama and ComfyUI are NOT needed — embeddings use Jina AI API, images use Cloudflare Flux API. Both run from n8n on the VPS.
 
 ---
 
@@ -357,10 +358,13 @@ Schedule: first Monday of each month
 ```
 Trigger: article published
 → Extract article title + primary keyword
-→ ComfyUI API (localhost:8188): generate featured image using Flux.1
-  → Prompt: "Professional B2B consulting graphic, dark navy background, {keyword} concept, Markexis brand style, minimal, clean"
-→ Upload to WordPress media library → attach to post
+→ Cloudflare Workers AI (Flux-1-schnell, free 10k neurons/day): generate featured image
+  → POST api.cloudflare.com/client/v4/accounts/{id}/ai/run/@cf/black-forest-labs/flux-1-schnell
+  → Response: result.image = base64 JPEG
+  → Fallback chain: Cloudflare → HuggingFace → Pollinations (no key needed)
+→ Store base64 in content_pipeline
 ```
+Note: self-hosted ComfyUI was dropped — it requires a GPU + 24GB disk space. The free Cloudflare Flux API runs from n8n on the VPS at $0.
 
 ---
 
@@ -449,21 +453,26 @@ Trigger: competitor article extracted
 
 ### 5A. doc-ingester.json
 ```
-Trigger: manual (when new Markexis content added — decks, case studies, blog posts)
-→ Firecrawl or PDF parser: extract text
-→ Split into 500-token chunks
-→ Ollama (nomic-embed-text via Mac): generate embeddings
-→ INSERT into knowledge_base with embedding
+Trigger: POST /webhook/ops/ingest-doc
+Input: { "url": "..." } OR { "content": "...", "source": "...", "doc_type": "..." }
+→ If URL: Firecrawl scrape → markdown
+→ Clean markdown (strip images, code blocks, formatting)
+→ Sentence-boundary chunking: 600 chars per chunk, 100-char overlap
+→ Jina AI API (jina-embeddings-v2-base-en, 768-dim, free 1M tokens/mo):
+    POST api.jina.ai/v1/embeddings, batch size 8
+→ INSERT each chunk into knowledge_base with vector embedding
 ```
+Note: Ollama nomic-embed-text dropped — Jina AI free API runs from n8n on VPS, no local model needed.
 
 ### 5B. rag-searcher.json
 ```
-Trigger: webhook (called by other workflows or chatbot)
-Input: { "query": "what does Markexis charge for LatAm consulting?" }
-→ Ollama: embed the query
-→ Supabase pgvector: similarity search → top 5 chunks
-→ Groq: answer question using retrieved chunks + Markexis context
-→ Return answer
+Trigger: POST /webhook/ops/rag-search
+Input: { "query": "what does Markexis charge for LatAm consulting?", "synthesize": true }
+→ Jina AI: embed the query (same model as doc-ingester → cosine space matches)
+→ Supabase RPC match_knowledge_base: cosine similarity search → top 5 chunks
+   (ivfflat index — sub-100ms for < 1M rows)
+→ Groq 8b: synthesize an answer from the retrieved chunks
+→ Return chunks + synthesized answer
 ```
 
 ### 5C. pipeline-orchestrator.json
@@ -531,36 +540,44 @@ Interim: D-ID (20 videos/mo) + Kling AI (66 credits/mo) free tiers.
 
 ## Build Order (strict sequence)
 
-### Week 1 — Get first leads flowing
-- [ ] Phase 0A: Supabase project + schema
-- [ ] Phase 0B: VPS env vars (sign up for Groq + Firecrawl + Supabase)
-- [ ] Phase 1A: scrapers/lib/ (schema, poster, delays)
-- [ ] Phase 1C: lead-ingest-dedup.json in n8n
-- [ ] Phase 1D: enrichment.json in n8n
-- [ ] Phase 1E: scoring.json with Markexis ICP prompt
-- [ ] Phase 1G: reddit-scraper.json (easiest API, no scraping)
-- [ ] Phase 1G: github-scraper.json
+### Week 1 — Get first leads flowing ✅ DONE
+- [x] Phase 0A: Supabase project + schema (project: rslhqtgazcavoimlzxnf, pgvector enabled)
+- [x] Phase 0B: VPS env vars (Groq, Firecrawl, Supabase, Places, GitHub all set)
+- [x] Phase 1A: scrapers/lib/ (schema.js, poster.js, delays.js, templates.js)
+- [x] Phase 1C+D+E: lead-ingest-enrich-score.json — single workflow: ingest + Firecrawl enrich + Groq ICP score + Supabase
+- [x] Phase 1G: github-scraper.json (live — webhook POST /webhook/scrape/github)
+- [x] Phase 1G: hackernews-scraper.json (live — schedule 6h + webhook)
+- [x] Phase 1G: google-places-scraper.json (live — webhook POST /webhook/scrape/google-places)
 
-### Week 2 — Outreach live
-- [ ] Phase 1F: outreach-router.json with all 3 email tracks
-- [ ] Phase 1B: g2.js scraper (local Mac)
-- [ ] Phase 1G: producthunt-scraper.json
-- [ ] Phase 1G: google-places-scraper.json
+### Week 2 — Outreach + SEO live ✅ DONE
+- [x] Phase 1F: outreach.js + followup.js (3-track email sequences, Gmail SMTP on Mac)
+- [x] Phase 1H: scrapers/linkedin.js (Crawlee + Playwright stealth, cookie persistence)
+- [x] Phase 0C: SerpBear deployed on VPS port 3000, APIKEY set, 26 keywords seeded
+- [x] Phase 2A: keyword-research.json (Google Suggest → Groq cluster → Supabase)
+- [x] Phase 2B: rank-tracker.json (SerpBear → Supabase, every 6h)
+- [x] Phase 2C: trend-monitor.json (Google Trends unofficial JSON → daily 8am)
+- [x] Phase 2D: site-audit.json (PageSpeed Insights → Monday 9am)
 
-### Week 3 — LinkedIn + content
-- [ ] Phase 1H: linkedin.js (Crawlee stealth — hardest, do last)
-- [ ] Phase 0C: SerpBear deployed on VPS
-- [ ] Phase 2A: keyword-research.json
-- [ ] Phase 2B: rank-tracker.json
-- [ ] Phase 3A: article-writer.json
+### Week 3 — Content pipeline live ✅ DONE
+- [x] Phase 3A: article-writer.json (2-pass Groq 70b, WordPress publish optional)
+- [x] Phase 3B: social-posts.json (LinkedIn + Twitter via Groq 8b)
+- [x] Phase 3C: image-generator.json (Cloudflare Flux → HuggingFace → Pollinations)
+- [x] Phase 3D: content-director.json (orchestrator: article → social + image parallel → newsletter)
+- [x] Phase 0E: Listmonk deployed on VPS port 9000
 
-### Week 4 — Full automation
-- [ ] Phase 3B: social-posts.json
-- [ ] Phase 3C: newsletter.json (Listmonk deployed)
-- [ ] Phase 4A–4C: competitor intel pipeline
-- [ ] Phase 5C: pipeline-orchestrator.json
-- [ ] Phase 6: LinkedIn agents
-- [ ] Phase 0D: MoneyPrinterTurbo + Phase 7
+### Week 4 — Competitor + Knowledge + RAG ✅ DONE
+- [x] Phase 4A: sitemap-crawler.json (8 domains, daily 7am, fans out to content-extractor)
+- [x] Phase 4B: content-extractor.json (Firecrawl → competitor_articles → fires threat-assessor)
+- [x] Phase 4C: threat-assessor.json (Groq 8b → HIGH/MEDIUM/LOW → keyword_overlap[])
+- [x] Phase 5A: doc-ingester.json (Firecrawl → chunking → Jina AI embeddings → pgvector)
+- [x] Phase 5B: rag-searcher.json (Jina embed → match_knowledge_base RPC → Groq synthesis)
+- [x] Phase 5C: pipeline-orchestrator.json (keyword → SEO → content-director → RAG ingest)
+- [x] Supabase: match_knowledge_base RPC + ivfflat index migration applied
+
+### Remaining (Phase 6–7)
+- [ ] Phase 6: LinkedIn multi-agent system (Marshal Agent, ICP Finder, LinkedIn Coach)
+- [ ] Phase 0D: MoneyPrinterTurbo + Phase 7 video pipeline (MPT installed, needs Pexels key)
+- [ ] Phase 1G: Reddit scraper (API approval pending), ProductHunt scraper
 
 ---
 
@@ -586,6 +603,6 @@ After 30 days running:
 | SEO | SerpBear + Google APIs | $0 |
 | Email | Gmail SMTP + Listmonk | $0 |
 | Video | MoneyPrinterTurbo + Pexels/Pixabay | $0 |
-| Images | ComfyUI + Flux.1 (local Mac) | $0 |
+| Images | Cloudflare Workers AI (Flux, n8n VPS) → HuggingFace → Pollinations | $0 |
 | VPS | Already running (n8n) | existing |
 | **Total** | | **$0/month** |

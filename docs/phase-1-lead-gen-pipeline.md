@@ -129,9 +129,15 @@ CREATE TABLE outreach_log (
 );
 ```
 
-## What's Pending
+## What's Done vs Pending
 
+### Done
+- **LinkedIn scraper** — `scrapers/linkedin.js` built with Crawlee + playwright-extra stealth, cookie persistence via `scrapers/browsers/`
+- **RLS** — enabled on all 6 tables (`leads`, `outreach_log`, `content_pipeline`, `keywords`, `competitor_articles`, `knowledge_base`) with permissive anon policies so n8n ANON key can read/write. Migration applied 2026-06-18.
+- **outreach.js + followup.js** — Gmail SMTP via nodemailer, 3-track templates in `lib/templates.js`, dry-run mode, per-day limits
+
+### Still Pending
 - **Reddit scraper** — Reddit API approval pending (`REDDIT_CLIENT_ID=SKIP_PENDING_APPROVAL` in env)
-- **LinkedIn scraper** — scaffold in progress; needs Playwright browsers installed and a live logged-in session
-- **RLS hardening** — all Supabase tables currently have RLS disabled (anon key can read/write). Recommended: switch n8n to `service_role` key, enable RLS, restrict anon key to read-only on `leads`
-- **LinkedIn DM routing** — leads without email (common from GitHub/HN) should route to a LinkedIn DM queue; not yet built
+- **ProductHunt scraper** — GraphQL API key not yet applied for
+- **LinkedIn DM routing** — leads without email should route to a LinkedIn DM queue; not built yet (Phase 6)
+- **Email volume** — 0 sent to date; first batch pending manual `node outreach.js --limit=5` trigger
