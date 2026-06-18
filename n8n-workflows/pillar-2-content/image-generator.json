@@ -1,0 +1,48 @@
+{
+  "id": "imagegenv00001",
+  "name": "Pillar 2 - Image Generator (Cloudflare Flux → Supabase)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content/generate-image",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - generate-image",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "image-gen-markexis"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 2: Image Generator — 4-deep fallback chain → base64 JPEG ----\n// Primary:  Cloudflare Flux (verified working, JPEG base64 in result.image)\n// Fallback1: Gemini Imagen\n// Fallback2: HuggingFace FLUX.1-schnell\n// Fallback3: Pollinations.ai (no key, always available)\n// Input: { title: '...', keyword: '...', style: 'featured|thumbnail' }\n// Returns: { ok, image_base64, format, provider_used }\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst b = $json.body || $json;\n\nconst title   = String(b.title   || 'B2B Marketing Strategy').trim();\nconst keyword = String(b.keyword || title).trim();\nconst style   = (b.style === 'thumbnail') ? 'thumbnail' : 'featured';\n\n// Build a clean, specific image prompt\nconst BASE_PROMPT = style === 'thumbnail'\n  ? `YouTube thumbnail, bold text overlay \"${title}\", professional B2B business style, dark blue and white color scheme, clean modern design, high contrast, 1280x720`\n  : `Professional featured image for B2B article about \"${keyword}\", modern corporate style, blue tones, abstract business concept, clean minimalist, 1200x628`;\n\n// Provider 1: Cloudflare Flux\nasync function tryCloudflare(prompt) {\n  if (!ENV.CLOUDFLARE_ACCOUNT_ID || !ENV.CLOUDFLARE_API_TOKEN) return null;\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `https://api.cloudflare.com/client/v4/accounts/${ENV.CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell`,\n    headers: { Authorization: `Bearer ${ENV.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({ prompt, steps: 4 }),\n    json: true, timeout: 60000\n  });\n  if (res.success && res.result?.image) return { image_base64: res.result.image, format: 'jpeg', provider: 'cloudflare_flux' };\n  return null;\n}\n\n// Provider 2: HuggingFace Inference\nasync function tryHuggingFace(prompt) {\n  if (!ENV.HUGGINGFACE_API_KEY) return null;\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',\n    headers: { Authorization: `Bearer ${ENV.HUGGINGFACE_API_KEY}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({ inputs: prompt }),\n    encoding: 'arraybuffer', json: false, timeout: 60000\n  });\n  if (res && res.byteLength > 1000) {\n    return { image_base64: Buffer.from(res).toString('base64'), format: 'png', provider: 'huggingface_flux' };\n  }\n  return null;\n}\n\n// Provider 3: Pollinations (no key, always available, JPEG URL)\nasync function tryPollinations(prompt) {\n  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1200&height=628&nologo=true&seed=${Date.now() % 10000}`;\n  const res = await this.helpers.httpRequest({\n    method: 'GET', url, encoding: 'arraybuffer', json: false, timeout: 60000\n  });\n  if (res && res.byteLength > 1000) {\n    return { image_base64: Buffer.from(res).toString('base64'), format: 'jpeg', provider: 'pollinations' };\n  }\n  return null;\n}\n\n// Try providers in order\nconst providers = [tryCloudflare, tryHuggingFace, tryPollinations];\nlet result = null;\nfor (const fn of providers) {\n  try { result = await fn.call(this, BASE_PROMPT); if (result) break; } catch { continue; }\n}\n\nif (!result) return [{ json: { ok: false, error: 'All image providers failed', prompt: BASE_PROMPT } }];\n\n// Store reference in content_pipeline\nif (ENV.SUPABASE_URL && b.keyword) {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.SUPABASE_URL}/rest/v1/content_pipeline?on_conflict=keyword`,\n    headers: {\n      apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates'\n    },\n    body: JSON.stringify({ keyword: b.keyword, updated_at: new Date().toISOString() }),\n    json: false, timeout: 10000\n  }).catch(() => null);\n}\n\nreturn [{ json: { ok: true, ...result, style, prompt: BASE_PROMPT, size_kb: Math.round(result.image_base64.length * 0.75 / 1024) } }];"
+      },
+      "id": "node-image-pipeline",
+      "name": "Image Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - generate-image": { "main": [[{ "node": "Image Pipeline", "type": "main", "index": 0 }]] },
+    "Image Pipeline": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

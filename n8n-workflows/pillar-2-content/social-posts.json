@@ -1,0 +1,48 @@
+{
+  "id": "socialpostsv001",
+  "name": "Pillar 2 - Social Posts (Article → LinkedIn + Twitter via Groq)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content/social-posts",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - social-posts",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "social-posts-markexis"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 2: Social Posts — Article → LinkedIn post + Twitter thread via Groq ----\n// Input: { keyword: '...', title: '...', article: '...' }\n//   OR:  { content_pipeline_id: 'uuid' }  — fetches article from Supabase\n// LLM: Groq 8b for social (fast, no need for 70b) → Cerebras fallback\n// Cost: one LLM call total (both formats in one prompt)\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst b = $json.body || $json;\n\nlet keyword = b.keyword || '';\nlet title   = b.title   || '';\nlet article = b.article || '';\n\n// Fetch from Supabase if ID provided\nif (b.content_pipeline_id && ENV.SUPABASE_URL) {\n  const row = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${ENV.SUPABASE_URL}/rest/v1/content_pipeline?id=eq.${b.content_pipeline_id}&select=keyword,topic,article_draft`,\n    headers: { apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}` },\n    json: true, timeout: 10000\n  }).catch(() => []);\n  if (row.length) { keyword = row[0].keyword; title = row[0].topic; article = row[0].article_draft; }\n}\n\nif (!title && !article) return [{ json: { ok: false, error: 'Provide title+article or content_pipeline_id' } }];\n\n// Strip HTML tags for LLM input (saves tokens)\nconst cleanArticle = article.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').slice(0, 3000);\n\nconst SYSTEM = `You are a B2B content marketer for Markexis — specialists in LatAm Market Entry, AI Marketing, and GTM Strategy.\nWrite high-performing social content:\n- LinkedIn: 150-250 words, hook first line (no question openers), 3-5 punchy insights, call to action, 3-5 relevant hashtags\n- Twitter thread: 5-7 tweets, each ≤ 280 chars, numbered (1/ 2/ etc.), hook tweet first, last tweet is CTA to read full article\nTone: expert, direct, specific — never generic. Cite specifics from the article.`;\n\nconst USER = `Article: \"${title}\"\\nKeyword: ${keyword}\\n\\nArticle excerpt:\\n${cleanArticle}\\n\\nReturn JSON: { \"linkedin_post\": \"...\", \"twitter_thread\": [\"tweet1\", \"tweet2\", ...] }`;\n\nlet parsed = {};\nconst providers = [\n  { url: 'https://api.groq.com/openai/v1/chat/completions', key: ENV.GROQ_API_KEY, model: 'llama-3.1-8b-instant' },\n  { url: 'https://api.cerebras.ai/v1/chat/completions', key: ENV.CEREBRAS_API_KEY, model: 'llama3.1-70b' },\n];\nfor (const p of providers) {\n  if (!p.key) continue;\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST', url: p.url,\n      headers: { Authorization: `Bearer ${p.key}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ model: p.model, messages: [{role:'system',content:SYSTEM},{role:'user',content:USER}], temperature: 0.6, max_tokens: 1024, response_format: { type: 'json_object' } }),\n      json: true, timeout: 30000\n    });\n    parsed = JSON.parse(res.choices[0].message.content);\n    break;\n  } catch { continue; }\n}\n\nif (!parsed.linkedin_post) return [{ json: { ok: false, error: 'LLM returned no content', keyword } }];\n\n// Store back to content_pipeline\nif (ENV.SUPABASE_URL && keyword) {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.SUPABASE_URL}/rest/v1/content_pipeline?on_conflict=keyword`,\n    headers: {\n      apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates'\n    },\n    body: JSON.stringify({\n      keyword,\n      linkedin_post: parsed.linkedin_post,\n      twitter_thread: JSON.stringify(parsed.twitter_thread),\n      updated_at: new Date().toISOString()\n    }),\n    json: false, timeout: 15000\n  }).catch(() => null);\n}\n\nreturn [{ json: { ok: true, keyword, linkedin_post: parsed.linkedin_post, twitter_thread: parsed.twitter_thread, tweet_count: parsed.twitter_thread?.length || 0 } }];"
+      },
+      "id": "node-social-pipeline",
+      "name": "Social Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - social-posts": { "main": [[{ "node": "Social Pipeline", "type": "main", "index": 0 }]] },
+    "Social Pipeline": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

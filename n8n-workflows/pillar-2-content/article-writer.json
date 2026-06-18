@@ -1,0 +1,48 @@
+{
+  "id": "articlewriterv1",
+  "name": "Pillar 2 - Article Writer (Keyword → Groq → WordPress)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content/write-article",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - write-article",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "article-writer-markexis"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 2: Article Writer — Keyword → Groq outline+draft → WordPress ----\n// Input: { keyword: '...', pillar: 'latam|ai|gtm', word_count: 1500 }\n// LLM chain: Groq 70b (primary) → Cerebras 70b → Sambanova 405B\n// Two-pass: outline first (cheap, fast), then full article (keeps structure tight)\n// Cost optimisation: skip if keyword already has status='published' in content_pipeline\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst b = $json.body || $json;\n\nconst keyword  = String(b.keyword  || '').trim();\nconst pillar   = String(b.pillar   || 'gtm').trim();\nconst wordTarget = parseInt(b.word_count || 1500);\nif (!keyword) return [{ json: { ok: false, error: 'keyword is required' } }];\n\n// 0) Dedup: check if already published\nif (ENV.SUPABASE_URL) {\n  const existing = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${ENV.SUPABASE_URL}/rest/v1/content_pipeline?keyword=eq.${encodeURIComponent(keyword)}&status=eq.published&select=id,status`,\n    headers: { apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}` },\n    json: true, timeout: 10000\n  }).catch(() => []);\n  if (existing.length) return [{ json: { ok: false, skipped: true, reason: 'Already published', keyword } }];\n}\n\n// LLM fallback helper\nconst LLM_PROVIDERS = [\n  { url: 'https://api.groq.com/openai/v1/chat/completions', key: ENV.GROQ_API_KEY, model: 'llama-3.3-70b-versatile' },\n  { url: 'https://api.cerebras.ai/v1/chat/completions', key: ENV.CEREBRAS_API_KEY, model: 'llama3.1-70b' },\n  { url: 'https://api.sambanova.ai/v1/chat/completions', key: ENV.SAMBANOVA_API_KEY, model: 'Meta-Llama-3.1-405B-Instruct' },\n];\nasync function callLLM(system, user, maxTokens, jsonMode = false) {\n  for (const p of LLM_PROVIDERS) {\n    if (!p.key) continue;\n    try {\n      const body = { model: p.model, messages: [{role:'system',content:system},{role:'user',content:user}], temperature: 0.4, max_tokens: maxTokens };\n      if (jsonMode) body.response_format = { type: 'json_object' };\n      const res = await this.helpers.httpRequest({\n        method: 'POST', url: p.url,\n        headers: { Authorization: `Bearer ${p.key}`, 'Content-Type': 'application/json' },\n        body: JSON.stringify(body), json: true, timeout: 60000\n      });\n      return res.choices[0].message.content;\n    } catch { continue; }\n  }\n  throw new Error('All LLM providers failed');\n}\n\n// 1) Generate outline\nconst outlineSys = `You are a senior B2B content strategist for Markexis — specialists in LatAm Market Entry, AI Marketing Implementation, and Revenue Growth/GTM Strategy. Write SEO-optimised, expert-level B2B content that demonstrates deep domain expertise.`;\nconst outlineUser = `Create a detailed article outline for the keyword: \"${keyword}\"\nPillar: ${pillar}\nTarget word count: ${wordTarget}\n\nReturn JSON: { \"title\": \"...\", \"meta_description\": \"...\", \"sections\": [{\"h2\": \"...\", \"points\": [\"...\",\"...\"]}] }`;\n\nlet outline;\ntry {\n  outline = JSON.parse(await callLLM.call(this, outlineSys, outlineUser, 1024, true));\n} catch (e) {\n  return [{ json: { ok: false, error: `Outline failed: ${e.message}`, keyword } }];\n}\n\n// 2) Write full article from outline\nconst articleSys = `You are an expert B2B content writer for Markexis. Write detailed, authoritative articles that rank on Google and convert B2B readers.\nRules:\n- Write in clear, direct, expert tone — no fluff, no generic statements\n- Every claim backed by specific examples, data, or frameworks\n- Natural keyword usage — primary keyword in H1, first 100 words, 2-3 H2s, conclusion\n- Include actionable takeaways in every section\n- No em-dashes. No AI clichés (game-changer, leverage, unlock, delve, robust)\n- Output clean HTML (h2, h3, p, ul, li tags only — no html/body/head wrapper)`;\n\nconst outline_text = outline.sections?.map(s => `## ${s.h2}\\n${s.points?.join('\\n') || ''}`).join('\\n\\n') || '';\nconst articleUser = `Write a ${wordTarget}-word article:\\nTitle: ${outline.title}\\nKeyword: ${keyword}\\n\\nOutline:\\n${outline_text}\\n\\nWrite the complete article in HTML format.`;\n\nlet articleHTML;\ntry {\n  articleHTML = await callLLM.call(this, articleSys, articleUser, Math.min(wordTarget * 2, 8000));\n} catch (e) {\n  return [{ json: { ok: false, error: `Article write failed: ${e.message}`, keyword, outline } }];\n}\n\n// 3) Store draft in Supabase\nconst row = {\n  keyword,\n  topic: outline.title,\n  status: 'review',\n  pillar,\n  word_count_target: wordTarget,\n  article_draft: articleHTML,\n  updated_at: new Date().toISOString()\n};\n\nlet supaId = null;\nif (ENV.SUPABASE_URL) {\n  const sr = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.SUPABASE_URL}/rest/v1/content_pipeline?on_conflict=keyword`,\n    headers: {\n      apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=representation'\n    },\n    body: JSON.stringify(row), json: true, timeout: 20000\n  }).catch(e => ({ error: e.message }));\n  supaId = Array.isArray(sr) ? sr[0]?.id : null;\n}\n\n// 4) Publish to WordPress (if credentials set)\nlet wpResult = null;\nif (ENV.WORDPRESS_URL && ENV.WORDPRESS_USER && ENV.WORDPRESS_APP_PASSWORD) {\n  const auth = Buffer.from(`${ENV.WORDPRESS_USER}:${ENV.WORDPRESS_APP_PASSWORD}`).toString('base64');\n  const wpRes = await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.WORDPRESS_URL}/wp-json/wp/v2/posts`,\n    headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      title: outline.title,\n      content: articleHTML,\n      status: 'draft', // publish manually after review\n      excerpt: outline.meta_description || ''\n    }),\n    json: true, timeout: 30000\n  }).catch(e => ({ error: e.message }));\n  wpResult = wpRes.id ? { post_id: wpRes.id, link: wpRes.link } : { error: wpRes.error };\n}\n\nreturn [{ json: { ok: true, keyword, title: outline.title, word_count: articleHTML.split(' ').length, supabase_id: supaId, wordpress: wpResult, status: 'review' } }];"
+      },
+      "id": "node-article-pipeline",
+      "name": "Article Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - write-article": { "main": [[{ "node": "Article Pipeline", "type": "main", "index": 0 }]] },
+    "Article Pipeline": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

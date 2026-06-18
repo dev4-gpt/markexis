@@ -1,0 +1,31 @@
+{
+  "id": "siteauditv0001",
+  "name": "Pillar 1 - Site Audit (PageSpeed → Supabase)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 9 * * 1" }] }
+      },
+      "id": "node-schedule",
+      "name": "Schedule - Monday 9am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 1: Site Audit — Google PageSpeed Insights → Supabase ----\n// Free. No key needed for low-volume. Checks performance, SEO, accessibility.\n// Stores snapshot in content_pipeline table (status=audit) for history tracking.\n// Architecture: sequential desktop+mobile → Supabase upsert → summary return.\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst TARGET_URL = 'https://markexis.com';\nconst PSI_BASE = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed';\n// Key optional — falls back to keyless (lower rate limit, same data)\nconst KEY_PARAM = ENV.GOOGLE_PLACES_API_KEY ? `&key=${ENV.GOOGLE_PLACES_API_KEY}` : '';\n\nasync function runAudit(strategy) {\n  const url = `${PSI_BASE}?url=${encodeURIComponent(TARGET_URL)}&strategy=${strategy}&category=performance&category=seo&category=accessibility&category=best-practices${KEY_PARAM}`;\n  try {\n    const res = await this.helpers.httpRequest({ method: 'GET', url, json: true, timeout: 60000 });\n    const cats = res.lighthouseResult?.categories || {};\n    const audits = res.lighthouseResult?.audits || {};\n    return {\n      strategy,\n      performance: Math.round((cats.performance?.score || 0) * 100),\n      seo:         Math.round((cats.seo?.score || 0) * 100),\n      accessibility: Math.round((cats.accessibility?.score || 0) * 100),\n      best_practices: Math.round((cats['best-practices']?.score || 0) * 100),\n      lcp:  audits['largest-contentful-paint']?.displayValue || null,\n      fid:  audits['total-blocking-time']?.displayValue || null,\n      cls:  audits['cumulative-layout-shift']?.displayValue || null,\n      fcp:  audits['first-contentful-paint']?.displayValue || null,\n      ttfb: audits['server-response-time']?.displayValue || null,\n      ok: true\n    };\n  } catch (e) {\n    return { strategy, ok: false, error: e.message.slice(0, 200) };\n  }\n}\n\n// Run desktop and mobile sequentially (PSI rate-limits parallel calls)\nconst desktop = await runAudit.call(this, 'desktop');\nawait new Promise(r => setTimeout(r, 3000));\nconst mobile  = await runAudit.call(this, 'mobile');\n\nconst now = new Date().toISOString();\nconst auditRecord = {\n  keyword: `site_audit_${now.slice(0,10)}`,\n  topic: `Site Audit — markexis.com — ${now.slice(0,10)}`,\n  status: 'audit',\n  pillar: 'ops',\n  article_draft: JSON.stringify({ desktop, mobile, url: TARGET_URL, audited_at: now }, null, 2),\n  updated_at: now\n};\n\nif (ENV.SUPABASE_URL) {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.SUPABASE_URL}/rest/v1/content_pipeline?on_conflict=keyword`,\n    headers: {\n      apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates'\n    },\n    body: JSON.stringify(auditRecord),\n    json: false, timeout: 20000\n  }).catch(e => console.error('Supabase write failed:', e.message));\n}\n\n// Alert thresholds — log warning if below target\nconst alerts = [];\nif (desktop.ok && desktop.performance < 70) alerts.push(`Desktop performance: ${desktop.performance}/100 (< 70)`);\nif (desktop.ok && desktop.seo < 85) alerts.push(`Desktop SEO: ${desktop.seo}/100 (< 85)`);\nif (mobile.ok && mobile.performance < 50) alerts.push(`Mobile performance: ${mobile.performance}/100 (< 50)`);\n\nreturn [{ json: { ok: true, desktop, mobile, alerts, auditedAt: now } }];"
+      },
+      "id": "node-audit-pipeline",
+      "name": "Audit Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    }
+  ],
+  "connections": {
+    "Schedule - Monday 9am": { "main": [[{ "node": "Audit Pipeline", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

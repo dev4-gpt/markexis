@@ -1,0 +1,31 @@
+{
+  "id": "trendmonitor001",
+  "name": "Pillar 1 - Trend Monitor (Google Trends → Supabase)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 8 * * *" }] }
+      },
+      "id": "node-schedule",
+      "name": "Schedule - Daily 8am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 1: Trend Monitor — Google Trends unofficial JSON → Supabase ----\n// Checks interest-over-time for Markexis keyword clusters.\n// No API key needed. Strips the )]}' XSSI prefix Google adds.\n// Architecture: parallel fetches for all clusters, score stored in keywords table.\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\n\nconst CLUSTERS = [\n  { name: 'latam_market_entry', keyword: 'latam market entry', geo: 'US' },\n  { name: 'ai_marketing',       keyword: 'ai marketing strategy', geo: 'US' },\n  { name: 'gtm_strategy',       keyword: 'go-to-market strategy b2b', geo: 'US' },\n  { name: 'latam_mexico',       keyword: 'mexico market entry', geo: 'US' },\n  { name: 'latam_brazil',       keyword: 'brazil market expansion', geo: 'US' },\n];\n\nasync function fetchTrend(kw, geo) {\n  // Google Trends interest-over-time — past 3 months\n  const req = JSON.stringify({ comparisonItem: [{ keyword: kw, geo, time: 'today 3-m' }], category: 0, property: '' });\n  const url = `https://trends.google.com/trends/api/explore?hl=en-US&tz=300&req=${encodeURIComponent(req)}&ots=${Date.now()}&authuser=0`;\n  try {\n    const raw = await this.helpers.httpRequest({ method: 'GET', url, json: false, timeout: 20000 });\n    // Strip XSSI prefix and parse\n    const json = JSON.parse(String(raw).replace(/^\\)\\]\\}'\\n/, ''));\n    const widget = json.widgets?.find(w => w.type === 'TIMESERIES' || w.id === 'TIMESERIES');\n    return widget?.request?.requestOptions || null;\n  } catch { return null; }\n}\n\nasync function fetchTrendData(token, geo) {\n  if (!token) return null;\n  try {\n    const req = JSON.stringify({ time: 'today 3-m', resolution: 'WEEK', locale: 'en-US', comparisonItem: [{ geo: { country: geo }, complexKeywordsRestriction: { keyword: [{ type: 'BROAD', value: token }] }], requestOptions: { property: '', backend: 'CM', category: 0 }, userConfig: { userType: 'USER_TYPE_SCRAPER' } });\n    const raw = await this.helpers.httpRequest({\n      method: 'GET',\n      url: `https://trends.google.com/trends/api/widgetdata/multiline?hl=en-US&tz=300&req=${encodeURIComponent(req)}&token=${encodeURIComponent(token)}&user_gp=&authuser=0`,\n      json: false, timeout: 20000\n    });\n    const data = JSON.parse(String(raw).replace(/^\\)\\]\\}'\\n/, ''));\n    const points = data.default?.timelineData || [];\n    if (!points.length) return null;\n    const recent = points.slice(-4); // last 4 weeks\n    const avg = recent.reduce((s, p) => s + (p.value?.[0] || 0), 0) / recent.length;\n    const prev = points.slice(-8, -4);\n    const prevAvg = prev.reduce((s, p) => s + (p.value?.[0] || 0), 0) / Math.max(prev.length, 1);\n    return { current: Math.round(avg), previous: Math.round(prevAvg), change_pct: prevAvg ? Math.round(((avg - prevAvg) / prevAvg) * 100) : 0 };\n  } catch { return null; }\n}\n\n// Fetch all clusters in parallel (rate-limit: 1s gap between requests)\nconst results = [];\nfor (const cluster of CLUSTERS) {\n  await new Promise(r => setTimeout(r, 1200)); // 1.2s between requests to avoid rate-limit\n  const explore = await fetchTrend.call(this, cluster.keyword, cluster.geo);\n  const trend = await fetchTrendData.call(this, explore, cluster.geo);\n  results.push({\n    cluster: cluster.name,\n    keyword: cluster.keyword,\n    trend_current: trend?.current || null,\n    trend_previous: trend?.previous || null,\n    trend_change_pct: trend?.change_pct || null,\n    rising: trend ? trend.change_pct > 20 : false,\n    checked_at: new Date().toISOString()\n  });\n}\n\n// Store rising signals in Supabase keywords table as priority_score updates\nconst rising = results.filter(r => r.rising);\nif (rising.length && ENV.SUPABASE_URL) {\n  await Promise.allSettled(rising.map(r =>\n    this.helpers.httpRequest({\n      method: 'PATCH',\n      url: `${ENV.SUPABASE_URL}/rest/v1/keywords?cluster=eq.${encodeURIComponent('cluster_1_' + r.cluster.split('_')[0])}`,\n      headers: { apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ priority_score: 10 }),\n      json: false, timeout: 10000\n    }).catch(() => null)\n  ));\n}\n\nreturn [{ json: { ok: true, clusters: results.length, rising: rising.length, results } }];"
+      },
+      "id": "node-trend-pipeline",
+      "name": "Trend Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    }
+  ],
+  "connections": {
+    "Schedule - Daily 8am": { "main": [[{ "node": "Trend Pipeline", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

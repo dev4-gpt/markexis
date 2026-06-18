@@ -1,0 +1,48 @@
+{
+  "id": "contentdirector1",
+  "name": "Pillar 2 - Content Director (Orchestrator: keyword → all formats)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content/produce",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - content-produce",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "content-director-markexis"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 2: Content Director — Orchestrator ----\n// One webhook to trigger the full content pipeline:\n//   keyword → article → social posts → featured image (parallel) → newsletter section\n//   All calls are internal n8n webhooks on the same VPS (localhost:5678)\n// Designed for sequential execution with partial success — failure of one step\n//   does NOT block the others. Returns full summary of what completed.\n//\n// Architecture decisions:\n//   - Internal calls via localhost (no internet round-trip, no rate limits)\n//   - Article must complete first (social + image depend on it)\n//   - Social + image are parallel (independent)\n//   - Each sub-workflow handles its own Supabase writes and LLM fallbacks\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst b = $json.body || $json;\n\nconst keyword  = String(b.keyword  || '').trim();\nconst pillar   = String(b.pillar   || 'gtm').trim();\nconst wordTarget = parseInt(b.word_count || 1500);\nif (!keyword) return [{ json: { ok: false, error: 'keyword is required' } }];\n\nconst N8N_BASE = 'http://localhost:5678/webhook';\nconst started = new Date().toISOString();\n\nasync function callWorkflow(path, body) {\n  return this.helpers.httpRequest({\n    method: 'POST', url: `${N8N_BASE}/${path}`,\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify(body), json: true, timeout: 120000\n  });\n}\n\n// Step 1: Write article (required first)\nlet article = null, articleError = null;\ntry {\n  article = await callWorkflow.call(this, 'content/write-article', { keyword, pillar, word_count: wordTarget });\n} catch (e) { articleError = e.message.slice(0, 200); }\n\nif (!article?.ok) {\n  return [{ json: { ok: false, keyword, step: 'article', error: articleError || article?.error } }];\n}\n\n// Step 2: Social posts + image in parallel (both depend on article content)\nconst [socialResult, imageResult] = await Promise.allSettled([\n  callWorkflow.call(this, 'content/social-posts', { keyword, title: article.title, article: article.article_draft }),\n  callWorkflow.call(this, 'content/generate-image', { keyword, title: article.title, style: 'featured' })\n]);\n\nconst social = socialResult.status === 'fulfilled' ? socialResult.value : { ok: false, error: socialResult.reason?.message };\nconst image  = imageResult.status  === 'fulfilled' ? imageResult.value  : { ok: false, error: imageResult.reason?.message };\n\n// Step 3: Newsletter section (short, from article summary — Groq 8b)\nlet newsletter = null;\ntry {\n  const nRes = await this.helpers.httpRequest({\n    method: 'POST', url: 'https://api.groq.com/openai/v1/chat/completions',\n    headers: { Authorization: `Bearer ${ENV.GROQ_API_KEY}`, 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      model: 'llama-3.1-8b-instant',\n      messages: [\n        { role: 'system', content: 'You are a newsletter writer for Markexis. Write a 100-word newsletter section (1 paragraph) summarising this article in a way that drives clicks. No fluff. End with a link placeholder: [Read the full article →]' },\n        { role: 'user', content: `Article: \"${article.title}\"\\n\\nKeyword: ${keyword}\\n\\nArticle excerpt: ${(article.article_draft || '').replace(/<[^>]+>/g,' ').slice(0,1000)}` }\n      ],\n      temperature: 0.5, max_tokens: 200\n    }),\n    json: true, timeout: 30000\n  });\n  newsletter = nRes.choices[0].message.content;\n} catch { newsletter = null; }\n\n// Update Supabase with newsletter section\nif (newsletter && ENV.SUPABASE_URL) {\n  await this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.SUPABASE_URL}/rest/v1/content_pipeline?on_conflict=keyword`,\n    headers: {\n      apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates'\n    },\n    body: JSON.stringify({ keyword, newsletter_section: newsletter, status: 'review', updated_at: new Date().toISOString() }),\n    json: false, timeout: 15000\n  }).catch(() => null);\n}\n\nconst done = new Date().toISOString();\nconst elapsed = Math.round((new Date(done) - new Date(started)) / 1000);\n\nreturn [{ json: {\n  ok: true, keyword, pillar,\n  summary: {\n    article:   { ok: article.ok,  title: article.title, words: article.word_count },\n    social:    { ok: social.ok,   linkedin: !!social.linkedin_post, tweets: social.twitter_thread?.length || 0 },\n    image:     { ok: image.ok,    provider: image.provider_used, size_kb: image.size_kb },\n    newsletter: { ok: !!newsletter, chars: newsletter?.length || 0 }\n  },\n  elapsed_seconds: elapsed,\n  started, done\n} }];"
+      },
+      "id": "node-director-pipeline",
+      "name": "Content Director Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - content-produce": { "main": [[{ "node": "Content Director Pipeline", "type": "main", "index": 0 }]] },
+    "Content Director Pipeline": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

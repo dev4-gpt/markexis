@@ -1,0 +1,48 @@
+{
+  "id": "keywordresearch1",
+  "name": "Pillar 1 - Keyword Research (Suggest + Groq cluster → Supabase)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "seo/keyword-research",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - keyword-research",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "kw-research-markexis"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 1: Keyword Research — Google Suggest + Groq clustering → Supabase ----\n// Input: { seeds: ['latam market entry', 'ai marketing'] } (optional — uses defaults)\n// No paid API needed. Google Suggest is free and unlimited.\n// Groq clusters and prioritises the raw suggestions.\n// Architecture: parallel suggest fetches → Groq single classify call → Supabase batch upsert.\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst b = $json.body || $json;\n\nconst DEFAULT_SEEDS = [\n  'latam market entry', 'latin america b2b marketing', 'mexico market strategy',\n  'ai marketing implementation', 'ai sales marketing', 'b2b ai tools marketing',\n  'go-to-market strategy b2b', 'gtm consulting', 'revenue growth b2b', 'b2b pipeline strategy',\n  'latam expansion consulting', 'growth marketing consulting'\n];\nconst seeds = (Array.isArray(b.seeds) && b.seeds.length) ? b.seeds : DEFAULT_SEEDS;\n\n// 1) Fetch Google Suggest for each seed in parallel\nasync function suggest(query) {\n  try {\n    const url = `http://suggestqueries.google.com/complete/search?client=firefox&hl=en&q=${encodeURIComponent(query)}`;\n    const raw = await this.helpers.httpRequest({ method: 'GET', url, json: false, timeout: 10000 });\n    const data = JSON.parse(raw);\n    return Array.isArray(data[1]) ? data[1] : [];\n  } catch { return []; }\n}\n\nconst suggestResults = await Promise.allSettled(seeds.map(s => suggest.call(this, s)));\nconst rawKeywords = [...new Set(\n  suggestResults.flatMap(r => r.status === 'fulfilled' ? r.value : [])\n    .filter(k => k && k.length > 5 && k.length < 80)\n)];\n\nif (!rawKeywords.length) {\n  return [{ json: { ok: false, error: 'No suggestions returned from Google Suggest' } }];\n}\n\n// 2) Groq: cluster and score the keywords\nconst SYSTEM = `You are an SEO strategist for Markexis, a B2B consulting firm specialising in:\n1. LatAm Market Entry (Mexico, Brazil, Colombia, Argentina, Chile)\n2. AI Implementation in Marketing & Sales\n3. Revenue Growth & GTM Strategy\n\nGiven a list of raw keyword suggestions, return a JSON object:\n{\n  \"keywords\": [\n    { \"keyword\": \"...\", \"cluster\": \"latam|ai|gtm|competitor|other\", \"intent\": \"commercial|informational|navigational\", \"priority\": 1-10, \"pillar\": \"latam|ai|gtm\" }\n  ]\n}\nOnly include keywords with priority >= 6. Mark competitor-targeting keywords cluster=\"competitor\". Prioritise commercial intent highest.`;\n\nconst USER = `Keywords to classify (${rawKeywords.length} total):\\n${rawKeywords.slice(0, 80).join('\\n')}`;\n\nlet parsed = { keywords: [] };\nconst providers = [\n  { url: 'https://api.groq.com/openai/v1/chat/completions', key: ENV.GROQ_API_KEY, model: 'llama-3.1-8b-instant' },\n  { url: 'https://api.cerebras.ai/v1/chat/completions', key: ENV.CEREBRAS_API_KEY, model: 'llama3.1-70b' },\n  { url: 'https://api.sambanova.ai/v1/chat/completions', key: ENV.SAMBANOVA_API_KEY, model: 'Meta-Llama-3.1-405B-Instruct' },\n];\nfor (const p of providers) {\n  if (!p.key) continue;\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'POST', url: p.url,\n      headers: { Authorization: `Bearer ${p.key}`, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ model: p.model, messages: [{role:'system',content:SYSTEM},{role:'user',content:USER}], temperature: 0.2, max_tokens: 2048, response_format: { type: 'json_object' } }),\n      json: true, timeout: 30000\n    });\n    parsed = JSON.parse(res.choices[0].message.content);\n    break;\n  } catch { continue; }\n}\n\nconst toStore = parsed.keywords || [];\nif (!toStore.length) return [{ json: { ok: false, error: 'Groq returned no keywords', raw_count: rawKeywords.length } }];\n\n// 3) Batch upsert into Supabase keywords table\nconst upserts = await Promise.allSettled(toStore.map(kw =>\n  this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.SUPABASE_URL}/rest/v1/keywords?on_conflict=keyword`,\n    headers: {\n      apikey: ENV.SUPABASE_ANON_KEY, Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n      'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates'\n    },\n    body: JSON.stringify({\n      keyword: kw.keyword, pillar: kw.pillar, cluster: `cluster_${kw.cluster}`,\n      priority_score: kw.priority, kd: null, volume: null,\n      last_checked: new Date().toISOString()\n    }),\n    json: false, timeout: 15000\n  })\n));\n\nconst ok = upserts.filter(r => r.status === 'fulfilled').length;\nreturn [{ json: { ok: true, raw_suggestions: rawKeywords.length, clustered: toStore.length, stored: ok, seeds_used: seeds.length } }];"
+      },
+      "id": "node-kw-pipeline",
+      "name": "Keyword Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - keyword-research": { "main": [[{ "node": "Keyword Pipeline", "type": "main", "index": 0 }]] },
+    "Keyword Pipeline": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

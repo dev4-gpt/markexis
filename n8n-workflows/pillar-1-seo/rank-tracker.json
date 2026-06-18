@@ -1,0 +1,31 @@
+{
+  "id": "ranktrackerv001",
+  "name": "Pillar 1 - Rank Tracker (SerpBear → Supabase)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 6 }] }
+      },
+      "id": "node-schedule",
+      "name": "Schedule - Every 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Pillar 1: Rank Tracker — SerpBear → Supabase ----\n// Pulls current keyword positions, detects changes, upserts into keywords table.\n// Architecture: single Code node for full async control + error resilience.\nconst ENV = (typeof $env !== 'undefined' && $env) ? $env : process.env;\nconst SBKEY = ENV.SERPBEAR_API_KEY;\nconst SBURL = 'http://localhost:3000'; // internal VPS call, no port exposure needed\nconst DOMAIN = 'markexis.com';\n\nif (!SBKEY) return [{ json: { error: 'SERPBEAR_API_KEY not set', ok: false } }];\n\n// 1) Fetch current positions from SerpBear\nlet keywords = [];\ntry {\n  const sb = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${SBURL}/api/keywords?domain=${encodeURIComponent(DOMAIN)}`,\n    headers: { Authorization: `Bearer ${SBKEY}` },\n    json: true, timeout: 20000\n  });\n  keywords = sb.keywords || [];\n} catch (e) {\n  return [{ json: { error: `SerpBear fetch failed: ${e.message}`, ok: false } }];\n}\n\nif (!keywords.length) return [{ json: { message: 'No keywords tracked yet', ok: true, count: 0 } }];\n\n// 2) Batch upsert to Supabase — one request per keyword to preserve dedup on keyword\n//    Use Promise.allSettled so one failure doesn't block the rest\nconst upserts = keywords.map(kw => {\n  const row = {\n    keyword: kw.keyword,\n    current_position: kw.position || null,\n    previous_position: kw.history?.length ? kw.history[kw.history.length - 1] : null,\n    volume: kw.volume || null,\n    pillar: detectPillar(kw.keyword),\n    cluster: detectCluster(kw.keyword),\n    last_checked: new Date().toISOString()\n  };\n  return this.helpers.httpRequest({\n    method: 'POST',\n    url: `${ENV.SUPABASE_URL}/rest/v1/keywords?on_conflict=keyword`,\n    headers: {\n      apikey: ENV.SUPABASE_ANON_KEY,\n      Authorization: `Bearer ${ENV.SUPABASE_ANON_KEY}`,\n      'Content-Type': 'application/json',\n      Prefer: 'resolution=merge-duplicates'\n    },\n    body: JSON.stringify(row),\n    json: false, timeout: 15000\n  }).then(() => ({ kw: kw.keyword, pos: kw.position, ok: true }))\n    .catch(e => ({ kw: kw.keyword, ok: false, err: e.message.slice(0, 100) }));\n});\n\nconst results = await Promise.allSettled(upserts);\nconst settled = results.map(r => r.value || r.reason);\nconst ok = settled.filter(r => r.ok).length;\nconst failed = settled.filter(r => !r.ok).length;\n\n// 3) Detect significant drops (position worsened by 5+) for alerting\nconst drops = settled.filter(r => r.ok && r.prevPos && r.pos && (r.pos - r.prevPos) >= 5);\n\nreturn [{ json: { ok: true, total: keywords.length, upserted: ok, failed, drops: drops.length, domain: DOMAIN, checkedAt: new Date().toISOString() } }];\n\nfunction detectPillar(kw) {\n  const k = kw.toLowerCase();\n  if (k.includes('latam') || k.includes('latin america') || k.includes('mexico') || k.includes('brazil')) return 'latam';\n  if (k.includes('ai ') || k.includes('artificial intelligence')) return 'ai';\n  return 'gtm';\n}\nfunction detectCluster(kw) {\n  const k = kw.toLowerCase();\n  if (k.includes('latam') || k.includes('latin america') || k.includes('mexico') || k.includes('brazil')) return 'cluster_1_latam';\n  if (k.includes('ai ') || k.includes('artificial intelligence')) return 'cluster_2_ai';\n  if (k.includes('consult') || k.includes('agency')) return 'cluster_4_competitor';\n  return 'cluster_3_gtm';\n}"
+      },
+      "id": "node-rank-pipeline",
+      "name": "Rank Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    }
+  ],
+  "connections": {
+    "Schedule - Every 6h": { "main": [[{ "node": "Rank Pipeline", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
