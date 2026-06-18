@@ -11,7 +11,7 @@
 A full **AI CMO Platform** spanning 5 pillars plus a lead generation pipeline (Pillar 0). This repo contains the complete, production code for **Pillar 0 (Lead Generation)** — the engine that scrapes leads across 12 platforms, scores them against Markexis's ICP, and fires personalised cold-email sequences automatically.
 
 ```
-Lead Sources (12 platforms)
+Lead Sources (4 live on VPS + LinkedIn on Mac → 8 more planned)
         │
         ▼
 ┌─────────────────────────────────────────────────────────┐
@@ -64,18 +64,18 @@ Lead Sources (12 platforms)
 
 ## Lead Sources
 
-| Platform | Where | Method |
-|----------|-------|--------|
-| GitHub | VPS (n8n) | REST API — founders of B2B SaaS repos |
-| HackerNews | VPS (n8n) | Algolia search — high-intent Ask HN posts |
-| Google Maps/Places | VPS (n8n) | Places API — LatAm businesses |
-| Reddit | VPS (n8n) | OAuth API (pending approval) |
-| ProductHunt | VPS (n8n) | GraphQL API |
-| LinkedIn | Local Mac | Crawlee + Playwright stealth (**built** — `scrapers/linkedin.js`) |
-| Instagram, Twitter/X | Local Mac | Crawlee + Playwright |
-| Facebook Groups | Local Mac | Crawlee + Playwright |
-| G2, Clutch, Wellfound | Local Mac | Crawlee (public pages) |
-| Yelp | VPS (n8n) | Fusion API |
+| Platform | Where | Method | Status |
+|----------|-------|--------|--------|
+| GitHub | VPS (n8n) | REST API — founders of B2B SaaS repos | ✅ Live |
+| HackerNews | VPS (n8n) | Algolia search — high-intent Ask HN posts | ✅ Live |
+| Google Maps/Places | VPS (n8n) | Places API — LatAm businesses | ✅ Live |
+| LinkedIn | Local Mac | Crawlee + Playwright stealth (`scrapers/linkedin.js`) | ✅ Built |
+| Reddit | VPS (n8n) | OAuth API | 🔧 Pending API approval |
+| ProductHunt | VPS (n8n) | GraphQL API | 🔧 Planned |
+| Instagram, Twitter/X | Local Mac | Crawlee + Playwright | 🔧 Planned |
+| Facebook Groups | Local Mac | Crawlee + Playwright | 🔧 Planned |
+| G2, Clutch, Wellfound | Local Mac | Crawlee (public pages) | 🔧 Planned |
+| Yelp | VPS (n8n) | Fusion API | 🔧 Planned |
 
 ---
 
@@ -191,6 +191,22 @@ curl -X POST http://67.207.89.85:5678/webhook/scrape/google-places \
 | Email outreach | 0 sent (dry-run confirmed — 1 GOOD lead with email ready) |
 | LinkedIn scraper | Built — `node linkedin.js --login` to authenticate, then headless |
 | Monthly cost | $0 AI + $6 VPS |
+
+---
+
+---
+
+## Related: The Gatekeeper
+
+[**The Gatekeeper**](https://github.com/dev4-gpt/the-gatekeeper) is the inbound qualification layer that pairs with this pipeline.
+
+| This repo (outbound) | The Gatekeeper (inbound) |
+|----------------------|--------------------------|
+| Scrapes 12 platforms → ICP scores with Groq → fires cold email sequences | When a prospect replies or books a call, runs them through a BANT qualification flow |
+| Fully automated — zero human time | Human-in-the-loop — confirms scoring with the prospect before routing |
+| Output: 3-track email sequences in Supabase | Output: book_ae / nurture / disqualify + explainable reasoning in a Streamlit dashboard |
+
+Together they cover the full funnel: **automated outbound fills the top, Gatekeeper qualifies what comes back.**
 
 ---
 
