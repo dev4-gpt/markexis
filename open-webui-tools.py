@@ -16,7 +16,7 @@ import requests
 from collections import Counter
 
 
-N8N = "http://localhost:5678/webhook"
+N8N = "http://67.207.89.85:5678/webhook"
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 
