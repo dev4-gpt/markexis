@@ -16,6 +16,7 @@ WORKFLOWS=(
   "n8n-workflows/pillar-0-lead-gen/github-scraper.json:githubscraper001"
   "n8n-workflows/pillar-0-lead-gen/hackernews-scraper.json:hnscraper00001"
   "n8n-workflows/pillar-0-lead-gen/google-places-scraper.json:gplacesscraper1"
+  "n8n-workflows/pillar-0-lead-gen/reddit-scraper.json:redditscraper01"
   # Pillar 1 — SEO Intelligence
   "n8n-workflows/pillar-1-seo/rank-tracker.json:ranktrackerv001"
   "n8n-workflows/pillar-1-seo/keyword-research.json:keywordresearch1"

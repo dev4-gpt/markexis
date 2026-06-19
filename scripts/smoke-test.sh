@@ -11,6 +11,7 @@ WEBHOOKS=(
   "scrape/github|Pillar 0  | GitHub founder scraper"
   "scrape/hackernews|Pillar 0  | HackerNews high-intent scraper"
   "scrape/google-places|Pillar 0  | Google Places LatAm scraper"
+  "scrape/reddit|Pillar 0  | Reddit keyword scraper (keyless JSON API)"
   "seo/keyword-research|Pillar 1  | Keyword research (Google Suggest → Groq)"
   "content/write-article|Pillar 2  | Article writer (Groq 70b → Supabase)"
   "content/social-posts|Pillar 2  | Social posts (Groq 8b → LinkedIn + Twitter)"

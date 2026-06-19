@@ -1,0 +1,48 @@
+{
+  "id": "redditscraper01",
+  "name": "Pillar 0 - Reddit Lead Scraper (keyless JSON API)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "scrape/reddit",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook - reddit-scraper",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "reddit-scraper-markexis"
+    },
+    {
+      "parameters": {
+        "jsCode": "const _body = $json.body || $json; if (_body._smoke_test) return [{ json: { ok: true, smoke_test: true } }];\n// ---- Reddit Lead Scraper — no OAuth needed, uses public .json endpoints ----\n// Rate limit: ~60 req/min unauthenticated — adds 1s delay between subreddit fetches\n// Flow: subreddit keyword search → filter by Markexis ICP terms → user profile → ingest\nconst INGEST_URL = 'http://localhost:5678/webhook/lead-ingest';\nconst CAP = 30; // max new leads per run\nconst DELAY_MS = 1100; // stay under rate limit\n\n// Subreddits + keywords from CLAUDE.md Markexis targeting strategy\nconst TARGETS = [\n  { sub: 'SaaS', keywords: ['latam', 'latin america', 'mexico', 'brazil', 'expand', 'international', 'go-to-market', 'marketing help', 'ai marketing', 'gtm'] },\n  { sub: 'startups', keywords: ['latam', 'international expansion', 'marketing strategy', 'gtm', 'cac', 'pipeline', 'series a', 'ai marketing'] },\n  { sub: 'entrepreneur', keywords: ['latin america', 'latam market', 'marketing consultant', 'growth strategy', 'ai tools marketing'] },\n  { sub: 'b2bmarketing', keywords: ['latam', 'latin america', 'ai implementation', 'gtm strategy', 'pipeline', 'revenue'] },\n  { sub: 'marketing', keywords: ['latam expansion', 'ai marketing', 'gtm', 'b2b growth'] },\n];\n\nconst HEADERS = {\n  'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',\n  'Accept': 'application/json'\n};\n\nasync function sleep(ms) {\n  return new Promise(r => setTimeout(r, ms));\n}\n\nfunction extractDomain(text) {\n  if (!text) return null;\n  const m = text.match(/https?:\\/\\/([^\\s<>\"'\\)]+)/);\n  if (!m) return null;\n  const d = m[1].replace(/^www\\./, '').split('/')[0].toLowerCase();\n  const skip = ['reddit.com', 'github.com', 'twitter.com', 'linkedin.com', 'youtube.com', 'medium.com', 'instagram.com', 't.co', 'bit.ly'];\n  return skip.some(s => d.endsWith(s)) ? null : d;\n}\n\nconst seen = new Set();\nconst results = [];\n\nfor (const target of TARGETS) {\n  if (results.length >= CAP) break;\n\n  for (const kw of target.keywords) {\n    if (results.length >= CAP) break;\n\n    // Search within subreddit\n    let searchRes;\n    try {\n      searchRes = await this.helpers.httpRequest({\n        method: 'GET',\n        url: `https://www.reddit.com/r/${target.sub}/search.json?q=${encodeURIComponent(kw)}&sort=new&limit=10&restrict_sr=true`,\n        headers: HEADERS,\n        json: true,\n        timeout: 12000\n      });\n    } catch { continue; }\n\n    const posts = searchRes?.data?.children || [];\n    for (const post of posts) {\n      if (results.length >= CAP) break;\n      const author = post?.data?.author;\n      if (!author || author === '[deleted]' || author === 'AutoModerator' || seen.has(author)) continue;\n      seen.add(author);\n\n      // Fetch user profile\n      let profile = {};\n      try {\n        await sleep(DELAY_MS);\n        profile = await this.helpers.httpRequest({\n          method: 'GET',\n          url: `https://www.reddit.com/user/${author}/about.json`,\n          headers: HEADERS,\n          json: true,\n          timeout: 10000\n        });\n      } catch { /* profile optional */ }\n\n      const pdata = profile?.data || {};\n      const bio = (pdata.subreddit?.public_description || '').replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim();\n      const domain = extractDomain(bio);\n\n      const lead = {\n        name: author,\n        email: null,\n        company: domain || author,\n        domain: domain,\n        title: null,\n        location: null,\n        source_platform: 'reddit',\n        source_url: `https://www.reddit.com/user/${author}`,\n        raw_bio: bio || `Reddit user in r/${target.sub} who posted about: ${kw}. Post: \"${(post?.data?.title || '').slice(0, 200)}\"`,\n        company_size_signal: 'unknown',\n        scraped_at: new Date().toISOString()\n      };\n\n      let ingestResult = 'skipped';\n      try {\n        const r = await this.helpers.httpRequest({\n          method: 'POST',\n          url: INGEST_URL,\n          headers: { 'Content-Type': 'application/json' },\n          body: JSON.stringify(lead),\n          json: true,\n          timeout: 30000\n        });\n        ingestResult = r.status || 'ok';\n      } catch (e) {\n        ingestResult = `error: ${e.message?.slice(0, 60)}`;\n      }\n\n      results.push({ author, subreddit: target.sub, keyword: kw, domain, ingest: ingestResult });\n    }\n\n    await sleep(DELAY_MS);\n  }\n}\n\nreturn [{ json: { scraped: results.length, results } }];"
+      },
+      "id": "node-reddit",
+      "name": "Reddit Scrape + Ingest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "node-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [520, 300]
+    }
+  ],
+  "connections": {
+    "Webhook - reddit-scraper": { "main": [[{ "node": "Reddit Scrape + Ingest", "type": "main", "index": 0 }]] },
+    "Reddit Scrape + Ingest": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
