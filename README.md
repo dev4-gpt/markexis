@@ -1,6 +1,6 @@
 # Markexis AI CMO Platform
 
-> **The Problem:** A full-stack B2B marketing team costs $612K–$850K/year. We replaced one with AI agents running at **$6/month total** ($0 AI) using open-source tools, free API tiers, and a self-hosted $6 VPS.
+> **The Problem:** A full-stack B2B marketing team costs $612K–$850K/year. We replaced one with AI agents running at **$12/month total** ($0 AI) using open-source tools, free API tiers, and a self-hosted $12 VPS.
 
 **Client:** [Markexis](https://markexis.com) — B2B consulting firm specialising in LatAm Market Entry, AI Marketing Implementation, and Revenue Growth Strategy.
 
@@ -67,7 +67,7 @@ A full **AI CMO Platform** spanning 6 pillars — all deployed and live as of 20
 
 | Layer | Tool | Cost |
 |-------|------|------|
-| Orchestration | n8n self-hosted (DigitalOcean $6/mo) | $6/mo |
+| Orchestration | n8n self-hosted (DigitalOcean $12/mo) | $12/mo |
 | AI / LLM | Groq (14,400 req/day free) → Cerebras → Sambanova | $0 |
 | Image generation | Cloudflare Workers AI (Flux, 10k neurons/day free) → HuggingFace → Pollinations | $0 |
 | Database + Vector | Supabase free tier + pgvector | $0 |
