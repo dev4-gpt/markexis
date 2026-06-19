@@ -6,6 +6,16 @@ Everything you need to operate, test, and debug the Markexis AI CMO Platform day
 
 ---
 
+## Open the UI
+
+```bash
+bash scripts/open-ui.sh
+# Starts SSH tunnel + opens NocoDB (localhost:8090) and Open WebUI (localhost:3001)
+# To stop the tunnel later: pkill -f "8090:localhost:8090"
+```
+
+---
+
 ## What Runs Automatically
 
 These workflows run on schedule without any manual action:
@@ -28,7 +38,7 @@ Run this before doing any manual work to confirm everything is live:
 
 ```bash
 bash scripts/smoke-test.sh
-# Expected: 14 passed, 0 failed
+# Expected: 15 passed, 0 failed
 ```
 
 If any webhook returns 404 or 000, see [Troubleshooting](#troubleshooting) below.

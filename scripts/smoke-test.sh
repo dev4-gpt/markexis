@@ -16,6 +16,7 @@ WEBHOOKS=(
   "content/social-posts|Pillar 2  | Social posts (Groq 8b → LinkedIn + Twitter)"
   "content/generate-image|Pillar 2  | Image generator (Cloudflare Flux fallback chain)"
   "content/produce|Pillar 2  | Content director (article + social + image + newsletter)"
+  "competitor/run-crawler|Pillar 3  | Sitemap crawler (manual trigger — 8 domains)"
   "competitor/extract|Pillar 3  | Competitor content extractor (Firecrawl)"
   "competitor/assess-threat|Pillar 3  | Threat assessor (Groq → HIGH/MEDIUM/LOW)"
   "ops/ingest-doc|Pillar 5  | Doc ingester (chunks → Jina embeddings → pgvector)"

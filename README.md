@@ -42,6 +42,12 @@ A full **AI CMO Platform** spanning 6 pillars — all deployed and live as of 20
 └──────────────────────────┬───────────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────────┐
+│  UI Layer (SSH tunnel → localhost)                           │
+│  NocoDB :8090 — spreadsheet views of all Supabase tables     │
+│  Open WebUI :3001 — AI chat + 8 tools wired to n8n webhooks  │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+┌──────────────────────────▼───────────────────────────────────┐
 │  Mac (outreach sender — VPS SMTP ports blocked)              │
 │  outreach.js → Email 1 · followup.js → Email 2 / 3          │
 │  Gmail SMTP · 3 tracks: LatAm | AI | Revenue Growth         │
@@ -58,7 +64,7 @@ A full **AI CMO Platform** spanning 6 pillars — all deployed and live as of 20
 | **1 — SEO Intelligence** | Rank tracking (SerpBear), keyword research, trend alerts | ✅ Live |
 | **2 — Content Production** | Articles → LinkedIn posts → featured images → newsletter | ✅ Live |
 | **3 — Competitor Intelligence** | Daily sitemap crawl, Firecrawl extract, Groq threat score | ✅ Live |
-| **4 — Video Production** | Short-form stock-footage videos via MoneyPrinterTurbo | 🔧 Deploy pending (MPT installed, needs Pexels API key) |
+| **4 — Video Production** | Short-form stock-footage videos via MoneyPrinterTurbo | 🔧 Deploy pending |
 | **5 — Knowledge & Ops** | pgvector RAG, doc ingestion, full pipeline orchestrator | ✅ Live |
 
 ---
@@ -69,7 +75,7 @@ A full **AI CMO Platform** spanning 6 pillars — all deployed and live as of 20
 |-------|------|------|
 | Orchestration | n8n self-hosted (DigitalOcean $12/mo) | $12/mo |
 | AI / LLM | Groq (14,400 req/day free) → Cerebras → Sambanova | $0 |
-| Image generation | Cloudflare Workers AI (Flux, 10k neurons/day free) → HuggingFace → Pollinations | $0 |
+| Image generation | Cloudflare Workers AI (Flux, 10k neurons/day) → HuggingFace → Pollinations | $0 |
 | Database + Vector | Supabase free tier + pgvector | $0 |
 | Embeddings (RAG) | Jina AI (1M tokens/month free, 768-dim) | $0 |
 | Company enrichment | Firecrawl free (1,000 req/mo) | $0 |
@@ -77,10 +83,12 @@ A full **AI CMO Platform** spanning 6 pillars — all deployed and live as of 20
 | Newsletter | Listmonk self-hosted on VPS | $0 |
 | Email sending | Gmail SMTP via App Password (runs on Mac) | $0 |
 | Scraping (auth platforms) | Crawlee + Playwright on local Mac | $0 |
+| **Data dashboard** | **NocoDB self-hosted on VPS** | **$0** |
+| **AI chat interface** | **Open WebUI self-hosted on VPS** | **$0** |
 
 ---
 
-## Active Webhooks (all returning 200)
+## Active Webhooks (15 endpoints)
 
 | Endpoint | Workflow | Purpose |
 |----------|----------|---------|
@@ -88,11 +96,12 @@ A full **AI CMO Platform** spanning 6 pillars — all deployed and live as of 20
 | `POST /webhook/scrape/github` | github-scraper | B2B SaaS founders via GitHub REST API |
 | `POST /webhook/scrape/hackernews` | hackernews-scraper | High-intent Ask HN / Show HN posters |
 | `POST /webhook/scrape/google-places` | google-places-scraper | LatAm businesses via Places API |
-| `POST /webhook/seo/keyword-research` | keyword-research | Google Suggest → Groq cluster → Supabase |
-| `POST /webhook/content/write-article` | article-writer | Keyword → Groq outline → Groq article → WordPress |
+| `POST /webhook/seo/keyword-research` | keyword-research | Groq-powered keyword expansion → Supabase |
+| `POST /webhook/content/write-article` | article-writer | Keyword → Groq outline → article → Supabase |
 | `POST /webhook/content/social-posts` | social-posts | Article → LinkedIn post + Twitter thread |
 | `POST /webhook/content/generate-image` | image-generator | Cloudflare Flux → base64 JPEG (4-deep fallback) |
 | `POST /webhook/content/produce` | content-director | Article + social + image + newsletter in one call |
+| `POST /webhook/competitor/run-crawler` | sitemap-crawler | Manual trigger — crawl all 8 competitor domains |
 | `POST /webhook/competitor/extract` | content-extractor | Firecrawl URL → competitor_articles |
 | `POST /webhook/competitor/assess-threat` | threat-assessor | Groq → HIGH/MEDIUM/LOW threat score |
 | `POST /webhook/ops/ingest-doc` | doc-ingester | URL/text → chunks → Jina embed → pgvector |
@@ -101,10 +110,42 @@ A full **AI CMO Platform** spanning 6 pillars — all deployed and live as of 20
 
 **Scheduled workflows:**
 - `rank-tracker` — every 6h (SerpBear → Supabase)
-- `trend-monitor` — daily 8am (Google Trends → rising signals)
-- `site-audit` — Monday 9am (PageSpeed Insights desktop + mobile)
-- `sitemap-crawler` — daily 7am (8 competitor domains → new URLs)
 - `hackernews-scraper` — every 6h (also has webhook for manual trigger)
+- `sitemap-crawler` — daily 7am UTC (8 competitor domains → new URLs)
+- `trend-monitor` — daily 8am UTC (Google Trends → rising signals)
+- `site-audit` — Monday 9am UTC (PageSpeed Insights desktop + mobile)
+
+---
+
+## UI Layer
+
+### NocoDB — `localhost:8090` (via SSH tunnel)
+
+Spreadsheet views of all Supabase tables. Connect via SSH tunnel then browse:
+- `leads` — all scraped + scored leads, filter by `icp_score`
+- `content_pipeline` — articles in review, set `status = published` when ready
+- `keywords` — SEO clusters with priority scores
+- `competitor_articles` — threat-scored competitor content
+- `knowledge_base` — RAG chunks with embeddings
+- `outreach_log` — email send history
+
+### Open WebUI — `localhost:3001` (via SSH tunnel)
+
+AI chat powered by Groq Llama 3.3 70B with 8 custom tools wired to n8n:
+
+| Say this | What happens |
+|----------|-------------|
+| *"Write an article about LatAm market entry"* | Triggers full pipeline — article + social + image |
+| *"Show me a leads summary"* | Queries Supabase live — count by score + platform |
+| *"Scrape GitHub for new founders"* | Triggers github-scraper webhook |
+| *"What do we know about Markexis's services?"* | RAG search over knowledge base |
+| *"Run keyword research for AI marketing"* | Groq keyword expansion → Supabase |
+| *"Run competitor crawl"* | Crawls all 8 competitor sitemaps |
+
+**Open both UIs in one command:**
+```bash
+bash scripts/open-ui.sh
+```
 
 ---
 
@@ -117,7 +158,7 @@ A full **AI CMO Platform** spanning 6 pillars — all deployed and live as of 20
 - Signal: mentions LatAm, AI marketing, GTM, just raised funding, or hiring for marketing
 
 **Cold email tracks (personalised per signal):**
-- **Track A — LatAm:** `latam_signal = true` (LatAm is Markexis's strongest differentiator)
+- **Track A — LatAm:** `latam_signal = true` (Markexis's strongest differentiator)
 - **Track B — AI Marketing:** `ai_signal = true`
 - **Track C — Revenue Growth:** default for all PERFECT leads
 
@@ -130,19 +171,27 @@ markexis/
 ├── README.md
 ├── CLAUDE.md                          ← full build context + tool stack
 ├── MARKEXIS_IMPLEMENTATION_PLAN.md   ← phase-by-phase build plan
+├── docker-compose.yml                ← n8n + NocoDB + Open WebUI (VPS)
+├── open-webui-tools.py               ← 8 AI tools wired to n8n webhooks
 │
-├── scripts/                          ← operational scripts (run these)
-│   ├── deploy.sh                     ← deploy all workflows to VPS in one shot
-│   ├── smoke-test.sh                 ← verify all 12+ webhooks respond
-│   └── run-pipeline.sh               ← trigger full content pipeline for a keyword
+├── scripts/
+│   ├── deploy.sh                     ← deploy all 18 workflows to VPS
+│   ├── smoke-test.sh                 ← verify all 15 webhooks respond 200
+│   ├── run-pipeline.sh               ← trigger full content pipeline
+│   └── open-ui.sh                    ← SSH tunnel + open NocoDB + Open WebUI
 │
 ├── docs/
-│   ├── architecture.md               ← system architecture deep-dive
-│   ├── phase-0-infrastructure.md     ← VPS setup, Docker, firewall, Supabase
-│   └── phase-1-lead-gen-pipeline.md  ← pipeline design, ICP scoring, email cadence
+│   ├── architecture.md
+│   ├── operations.md                 ← day-to-day runbook (all pillars)
+│   ├── phase-0-infrastructure.md
+│   ├── phase-1-lead-gen-pipeline.md
+│   ├── phase-2-seo-intelligence.md
+│   ├── phase-3-content-production.md
+│   ├── phase-4-competitor-intelligence.md
+│   └── phase-5-knowledge-operations.md
 │
 ├── n8n-workflows/
-│   ├── README.md                     ← workflow IDs + import instructions
+│   ├── README.md
 │   ├── pillar-0-lead-gen/
 │   │   ├── lead-ingest-enrich-score.json
 │   │   ├── github-scraper.json
@@ -160,101 +209,73 @@ markexis/
 │   │   └── content-director.json
 │   ├── pillar-3-competitor/
 │   │   ├── sitemap-crawler.json
-│   │   ├── content-extractor.json
+│   │   └── content-extractor.json
 │   │   └── threat-assessor.json
 │   └── pillar-5-ops/
 │       ├── doc-ingester.json
 │       ├── rag-searcher.json
 │       └── pipeline-orchestrator.json
 │
-└── scrapers/                          ← Node.js, runs on local Mac (residential IP)
-    ├── README.md                      ← setup + anti-detection rules
+└── scrapers/                          ← Node.js, runs on local Mac
     ├── package.json
-    ├── .env.example
-    ├── index.js                       ← CLI dispatcher: node index.js --platform=linkedin
-    ├── linkedin.js                    ← Crawlee + Playwright stealth scraper
-    ├── outreach.js                    ← Email 1 sender (Day 1)
-    ├── followup.js                    ← Email 2+3 sender (Day 5 / Day 12)
+    ├── index.js
+    ├── linkedin.js
+    ├── outreach.js
+    ├── followup.js
     └── lib/
-        ├── schema.js                  ← unified lead schema normaliser
-        ├── poster.js                  ← POST to n8n webhook
-        ├── delays.js                  ← human-like random delays
-        └── templates.js              ← 3 tracks × 3 emails = 9 email templates
+        ├── schema.js
+        ├── poster.js
+        ├── delays.js
+        └── templates.js
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Prerequisites
+### 1. Open the UI (daily use)
 
-- n8n self-hosted instance — see [`docs/phase-0-infrastructure.md`](docs/phase-0-infrastructure.md)
-- Supabase project with schema applied — SQL in `CLAUDE.md` → "Supabase Schema"
-- API keys: Groq, Firecrawl, Supabase, Google Places, GitHub token, Jina AI, Cloudflare
+```bash
+bash scripts/open-ui.sh
+# Opens NocoDB at localhost:8090 and Open WebUI at localhost:3001
+```
 
 ### 2. Deploy All n8n Workflows (one command)
 
 ```bash
-# From project root:
 bash scripts/deploy.sh
-```
-
-Or manually for a single workflow:
-```bash
-FILE=n8n-workflows/pillar-0-lead-gen/lead-ingest-enrich-score.json
-ID=leadpipeline0001
-
-scp $FILE root@67.207.89.85:/tmp/$(basename $FILE)
-ssh root@67.207.89.85 "
-  docker cp /tmp/$(basename $FILE) n8n-n8n-1:/tmp/ &&
-  docker exec n8n-n8n-1 n8n import:workflow --input=/tmp/$(basename $FILE) &&
-  docker exec n8n-n8n-1 n8n update:workflow --id=$ID --active=true
-"
-# Then restart: ssh root@67.207.89.85 "cd ~/n8n && docker compose restart n8n"
 ```
 
 ### 3. Verify Everything Is Live
 
 ```bash
 bash scripts/smoke-test.sh
-# Expected: all webhooks return 200
+# Expected: 15 passed, 0 failed
 ```
 
 ### 4. Trigger Lead Scrapers
 
 ```bash
-# GitHub founders
 curl -X POST http://67.207.89.85:5678/webhook/scrape/github
-
-# HackerNews (also runs every 6h automatically)
 curl -X POST http://67.207.89.85:5678/webhook/scrape/hackernews
-
-# Google Places — LatAm businesses
-curl -X POST http://67.207.89.85:5678/webhook/scrape/google-places \
-  -H "Content-Type: application/json" \
-  -d '{"city": "Mexico City", "query": "B2B software company"}'
+curl -X POST http://67.207.89.85:5678/webhook/scrape/google-places
 ```
 
 ### 5. Run Full Content Pipeline
 
 ```bash
-# Produce article + social posts + image + RAG ingest from one keyword:
-bash scripts/run-pipeline.sh "latam market entry strategy"
-
-# Or call directly:
-curl -X POST http://67.207.89.85:5678/webhook/ops/run-pipeline \
-  -H "Content-Type: application/json" \
-  -d '{"keyword": "latam market entry strategy", "pillar": "latam"}'
+bash scripts/run-pipeline.sh "latam market entry strategy" latam
+# Produces: article (1500+ words) + LinkedIn post + Twitter thread + image + RAG ingest
+# Time: ~13 seconds
 ```
 
-### 6. Send Cold Emails (runs on Mac)
+### 6. Send Cold Emails (Mac only)
 
 ```bash
 cd scrapers
-node outreach.js --dry-run        # preview who gets Email 1 — no sends
-node outreach.js --limit=5        # send Email 1 to 5 qualified leads
-node followup.js --dry-run        # preview Day 5 / Day 12 follow-ups
-node followup.js --limit=10       # send follow-ups
+node outreach.js --dry-run     # preview — no sends
+node outreach.js --limit=5     # send Email 1 to 5 leads
+node followup.js --limit=10    # send Day 5/12 follow-ups
 ```
 
 ---
@@ -263,14 +284,16 @@ node followup.js --limit=10       # send follow-ups
 
 | Metric | Value |
 |--------|-------|
-| Workflows live on VPS | **18** (5 pillars fully deployed) |
-| Lead sources live | 4 VPS scrapers + LinkedIn (Mac) |
-| Leads in Supabase | **121** (GitHub, HackerNews, Google Maps) |
-| ICP scored | 6 GOOD scored — NachoNacho CTO on Track B, ready to send |
-| Email sequences | outreach.js + followup.js ready, Gmail SMTP connected |
-| Content pipeline | article-writer → social-posts → image-generator → RAG all live |
-| Competitor monitoring | 8 domains daily (demandcurve.com, cxl.com, openviewpartners.com, …) |
-| Vector RAG | pgvector + Jina AI embeddings + match_knowledge_base RPC live in Supabase |
+| Workflows live on VPS | **18** across 5 pillars |
+| Active webhook endpoints | **15** |
+| Lead sources live | GitHub · HackerNews · Google Places · LinkedIn (Mac) |
+| Leads in Supabase | **82** unique (deduped by source_url) |
+| ICP GOOD leads | **13** scored and ready for outreach |
+| Content pipeline | Full pipeline in ~13s: article + social + image + RAG |
+| Keywords tracked | 21+ Groq-expanded keyword clusters in Supabase |
+| Competitor monitoring | 8 domains daily, 50+ articles extracted + threat-scored |
+| RAG knowledge base | pgvector + Jina AI, 22+ chunks, `match_knowledge_base` RPC live |
+| UI | NocoDB + Open WebUI live at localhost:8090 / :3001 |
 | Monthly cost | **$0 AI + $6 VPS** |
 
 ---
@@ -291,9 +314,13 @@ Together: **automated outbound fills the top of funnel, Gatekeeper qualifies wha
 
 ## Docs
 
+- [Operations Runbook](docs/operations.md) — day-to-day: scrapers, content, email, deploy, troubleshoot
 - [System Architecture](docs/architecture.md)
-- [Phase 0: Infrastructure Setup](docs/phase-0-infrastructure.md)
-- [Phase 1: Lead Gen Pipeline Design](docs/phase-1-lead-gen-pipeline.md)
+- [Phase 0: Infrastructure](docs/phase-0-infrastructure.md)
+- [Phase 1: Lead Gen Pipeline](docs/phase-1-lead-gen-pipeline.md)
+- [Phase 2: SEO Intelligence](docs/phase-2-seo-intelligence.md)
+- [Phase 3: Content Production](docs/phase-3-content-production.md)
+- [Phase 4: Competitor Intelligence](docs/phase-4-competitor-intelligence.md)
+- [Phase 5: Knowledge & Operations](docs/phase-5-knowledge-operations.md)
 - [n8n Workflow Reference](n8n-workflows/README.md)
-- [Scraper Setup + Anti-Detection Rules](scrapers/README.md)
 - [Full Build Context + Tool Stack](CLAUDE.md)
