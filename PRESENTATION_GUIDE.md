@@ -22,7 +22,7 @@
 
 ## The One-Sentence Pitch
 
-> "I built a full AI CMO platform — five pillars replacing a $612K/year marketing team — running at $6/month total infrastructure cost, with a live data dashboard and AI assistant wired to all 18 workflows."
+> "I built a full AI CMO platform — five pillars replacing a $612K/year marketing team — running at $25/month total infrastructure cost, with a live data dashboard and AI assistant wired to all 18 workflows."
 
 ---
 
