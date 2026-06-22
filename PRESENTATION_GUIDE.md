@@ -18,8 +18,6 @@
 
 **Open UI tabs with one command:** `bash scripts/open-ui.sh`
 
-**n8n login:** `aryamandev777@gmail.com` / `Markexis2026!`
-
 ---
 
 ## The One-Sentence Pitch
